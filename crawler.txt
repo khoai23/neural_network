@@ -1,0 +1,34 @@
+import sys, io
+from os import listdir
+from os.path import isfile, join, isdir, dirname, realpath
+
+def recursive(function, directory):
+	children = function(directory)
+	for child in children:
+		recursive(function, child)
+
+allFiles = []
+def filesForDirectory(dir):
+	allFiles.extend([join(dir, f) for f in listdir(dir) if isfile(join(dir, f))])
+	return [join(dir, f) for f in listdir(dir) if isdir(join(dir, f))]
+
+searchTerm = ['iexplorer.exe','chrome.exe','firefox.exe']
+mypath = dirname(realpath(__file__))
+recursive(filesForDirectory, mypath)
+onlyfiles = allFiles
+for fileDir in onlyfiles:
+	try:
+		file = io.open(fileDir, 'r', encoding='utf16')
+		fileString = file.read()
+	except UnicodeError as e:
+		print("file %s not xml utf-16, skipping. Error %s" % (fileDir, e))
+		continue
+	if(isinstance(searchTerm, str)):
+		if(searchTerm in fileString):
+			print("Detected phrase %s in directory %s" % (searchTerm, fileDir))
+			print(fileString)
+	else:
+		for term in searchTerm:
+			if(term in fileString):
+				print("Detected phrase %s in directory %s" % (term, fileDir))
+				print(fileString)
