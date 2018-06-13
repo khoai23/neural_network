@@ -43,7 +43,7 @@ def createSentenceCouplingFromFile(args):
 		# filter out those which are too long
 		if(len(srcSentences[i]) <= args.maximum_sentence_length and len(tgtSentences[i]) <= args.maximum_sentence_length):
 			coupling.append((srcSentences[i], tgtSentences[i]))
-		args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
+	args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
 	# Sort by number of words in source sentences
 	coupling = sorted(coupling, key=lambda couple:len(couple[0]))
 	if(args.dev_file_name):
@@ -226,7 +226,7 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			loss, _ = session.run(trainTuple[0 if useTrainingHelper else 1], feed_dict=feed_dict)
 			avgLosses[-1] += loss
 			if(args.verbose and args.global_steps % 1000 == 0):
-				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed" % (args.global_steps, loss, args.time_passed()))
+				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
 		avgLosses[-1] = avgLosses[-1] / len(batches)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
 			# run evaluationFunction every evaluation_step epoch
