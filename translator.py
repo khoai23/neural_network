@@ -221,6 +221,8 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			feed_dict = {input:batch[0], output:batch[1], batchSize:batch[2], outputLengthList:batch[3], maximumUnrolling:max(batch[3]), decoderInput:batch[4]}
 			loss, _ = session.run(trainTuple[0 if useTrainingHelper else 1], feed_dict=feed_dict)
 			avgLosses[-1] += loss
+			if(args.verbose and args.global_steps % 1000 == 0):
+				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed" % (args.global_steps, loss, args.time_passed()))
 		avgLosses[-1] = avgLosses[-1] / len(batches)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
 			# run evaluationFunction every evaluation_step epoch
@@ -524,7 +526,8 @@ if __name__ == "__main__":
 	timer = time.time()
 	def getTimer():
 		return time.time()-timer
-		
+	args.time_passed = getTimer
+	
 	# Create the session here
 	tf.reset_default_graph()
 	if(args.read_mode == 'embedding'):
