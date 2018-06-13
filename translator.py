@@ -5,7 +5,7 @@ import sys, os, pickle, argparse, io, time, random, json
 from calculatebleu import *
 
 def getVocabFromVocabFile(fileDir):
-	file = io.open(fileDir, 'r')
+	file = io.open(fileDir, 'r', encoding='utf-8')
 	listVocab = file.readlines()
 	file.close()
 	return listVocab
@@ -43,6 +43,7 @@ def createSentenceCouplingFromFile(args):
 		# filter out those which are too long
 		if(len(srcSentences[i]) <= args.maximum_sentence_length and len(tgtSentences[i]) <= args.maximum_sentence_length):
 			coupling.append((srcSentences[i], tgtSentences[i]))
+		args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
 	# Sort by number of words in source sentences
 	coupling = sorted(coupling, key=lambda couple:len(couple[0]))
 	if(args.dev_file_name):
@@ -56,7 +57,10 @@ def createSentenceCouplingFromFile(args):
 		otherCoupling = []
 		
 		for i in range(len(srcDev)):
-			otherCoupling.append((srcDev[i], tgtDev[i]))
+			if(len(srcDev[i]) <= args.maximum_sentence_length and len(tgtDev[i]) <= args.maximum_sentence_length):
+				otherCoupling.append((srcDev[i], tgtDev[i]))
+				
+		args.print_verbose('Sentences accepted from dev files: %d' % len(otherCoupling))
 	else:
 		otherCoupling = None
 	return coupling, otherCoupling
@@ -103,15 +107,14 @@ def createCouplingFromVocabFile(args):
 		srcWord.remove(args.unknown_word)
 	if(args.unknown_word in tgtWord):
 		tgtWord.remove(args.unknown_word)
-	srcWord.insert(args.unknown_word, 0)
-	tgtWord.insert(args.unknown_word, 0)
+	srcWord.insert(0, args.unknown_word)
+	tgtWord.insert(0, args.unknown_word)
 	# create the src/tgt list into normal and ref, embeddingVector will be None
 	# initializer = np.random.normal if(args.vocab_init in ['gaussian', 'normal', 'xavier']) else np.random.uniform
 	
 	counter = 0
 	srcWordToId, srcIdToWord = {}, {}
 	for key in srcWord:
-		assert len(srcEmbeddingVector) == counter
 		srcWordToId[key] = counter
 		srcIdToWord[counter] = key
 		counter += 1
@@ -120,7 +123,6 @@ def createCouplingFromVocabFile(args):
 	tgtWordToId, tgtIdToWord = {}, {}
 	tgtEmbeddingVector = []
 	for key in tgtWord:
-		assert len(tgtEmbeddingVector) == counter
 		tgtWordToId[key] = counter
 		tgtIdToWord[counter] = key
 		counter += 1
@@ -238,8 +240,9 @@ def evaluateSession(args, session, dictTuple, sampleBatch):
 def generateBatchesFromSentences(args, data, dictTuple, singleBatch=False):
 	srcDictTuple, tgtDictTuple = dictTuple
 	srcDict, tgtDict = srcDictTuple[0], tgtDictTuple[0]
-	unknownWord = args.end_token
-	srcUnknownID, tgtUnknownID = srcDict[unknownWord], tgtDict[unknownWord]
+	unknownPadding = args.unknown_word
+	srcUnknownID, tgtUnknownID = srcDict[unknownPadding], tgtDict[unknownPadding]
+	startTokenPad = [tgtDict[args.start_token]]
 	# data are binding tuples of (s1, s2) for src-tgt, s1/s2 preprocessed into array of respective words
 	batches = []
 	srcBatch, tgtBatch = [], []
@@ -249,18 +252,18 @@ def generateBatchesFromSentences(args, data, dictTuple, singleBatch=False):
 		srcBatch.append(srcSentence)
 		tgtBatch.append(tgtSentence)
 		if(len(srcBatch) == args.batch_size and not singleBatch):
-			# Full batch, begin converting. If singleBatch, will not end here
+			# Full batch, begin converting. If singleBatch, will not go here
 			assert len(srcBatch) == len(tgtBatch)
 			padMatrix(srcBatch, srcDict[args.end_token])
 			batchLengthList = padMatrix(tgtBatch, tgtDict[args.end_token])
-			tgtInputBatch = [ ([tgtDict[args.start_token]] + list(tgt))[:-1] for tgt in tgtBatch]
+			tgtInputBatch = [ (startTokenPad + list(tgt))[:-1] for tgt in tgtBatch]
 			batchSize = args.batch_size
 			batches.append((srcBatch, tgtBatch, batchSize, batchLengthList, tgtInputBatch))
 			srcBatch, tgtBatch = [], []
 	# Last batch
 	padMatrix(srcBatch, srcDict[args.end_token])
 	batchLengthList = padMatrix(tgtBatch, tgtDict[args.end_token])
-	tgtInputBatch = [ ([tgtDict[args.start_token]] + list(tgt))[:-1] for tgt in tgtBatch]
+	tgtInputBatch = [ (startTokenPad + list(tgt))[:-1] for tgt in tgtBatch]
 	batchSize = len(srcBatch)
 	batches.append((srcBatch, tgtBatch, batchSize, batchLengthList, tgtInputBatch))
 	# Return the processed value
@@ -449,8 +452,13 @@ def calculateBleu(correct, result, trimData=None):
 	
 def stripResultArray(sentence, token):
 	# remove all token at the end of the sentence save one
-	if(sentence.find(token) > 0):
-		sentence = sentence[:sentence.find(token)]
+	if(isinstance(sentence, np.ndarray)):
+		sentence = sentence.tolist()
+	try:
+		sentence = sentence[:sentence.index(token)]
+	except ValueError:
+		pass
+	return sentence
 	
 if __name__ == "__main__":
 	# Run argparse
@@ -467,7 +475,7 @@ if __name__ == "__main__":
 	parser.add_argument('-v', '--verbose', action='store_true', help='Print possibly pointless, particularly pitiful piece.')
 	parser.add_argument('--tgt', type=str, required=True, help='The extension/prefix for the target files.')
 	parser.add_argument('--src', type=str, required=True, help='The extension/prefix for the source files.')
-	parser.add_argument('--prefix_mode', action='store_true', help='If specified, tgt and src will be the prefix for the files.')
+	parser.add_argument('--prefix', action='store_true', help='If specified, tgt and src will be the prefix for the files.')
 	parser.add_argument('--unknown_word', type=str, default='*UNKNOWN*', help='Key in embedding/vocab standing for unknown word')
 	parser.add_argument('--start_token', type=str, default='<s>', help='Key in embedding/vocab standing for the starting token')
 	parser.add_argument('--end_token', type=str, default='<\s>', help='Key in embedding/vocab standing for the ending token')
@@ -487,8 +495,8 @@ if __name__ == "__main__":
 	
 	# args.src_dict_file = 'vi_tokenized.embedding.bin'
 	# args.tgt_dict_file = 'ch_tokenized.embedding.bin'
-	args.src_dict_file = args.src + args.embedding_file_name if(args.prefix_mode) else args.embedding_file_name + '.' + args.src
-	args.tgt_dict_file = args.tgt + args.embedding_file_name if(args.prefix_mode) else args.embedding_file_name + '.' + args.tgt
+	args.src_dict_file = args.src + args.embedding_file_name if(args.prefix) else args.embedding_file_name + '.' + args.src
+	args.tgt_dict_file = args.tgt + args.embedding_file_name if(args.prefix) else args.embedding_file_name + '.' + args.tgt
 	# args.src_file = 'vi_tokenized.txt'
 	# args.tgt_file = 'ch_tokenized.txt'
 	# args.size_hidden_layer = 128
@@ -519,7 +527,10 @@ if __name__ == "__main__":
 		
 	# Create the session here
 	tf.reset_default_graph()
-	embeddingTuple = createEmbeddingCouplingFromFile(args)
+	if(args.read_mode == 'embedding'):
+		embeddingTuple = createEmbeddingCouplingFromFile(args)
+	elif(args.read_mode == 'vocab'):
+		embeddingTuple = createCouplingFromVocabFile(args)
 	sessionTuple = createSession(args, embeddingTuple)
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	if(args.save_path):
@@ -539,13 +550,13 @@ if __name__ == "__main__":
 	else:
 		# If cannot find the data, create from files in direction
 		#try:
-			args.src_file = args.src + args.training_file_name if(args.prefix_mode) else args.training_file_name + '.' + args.src
-			args.tgt_file = args.tgt + args.training_file_name if(args.prefix_mode) else args.training_file_name + '.' + args.tgt
+			args.src_file = args.src + args.training_file_name if(args.prefix) else args.training_file_name + '.' + args.src
+			args.tgt_file = args.tgt + args.training_file_name if(args.prefix) else args.training_file_name + '.' + args.tgt
 			# create new batches from the files specified
 			batchesCoupling, sampleCoupling = createSentenceCouplingFromFile(args)
 			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
 			if(sampleCoupling is not None):
-				sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple, True)[0]
+				sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple)[0]
 			elif(args.mode in ['train', 'test']):
 				sample = generateRandomBatchesFromSet(args, batches, (embeddingTuple[0][0][args.end_token], embeddingTuple[1][0][args.end_token], embeddingTuple[1][0][args.start_token]))
 		#except Exception:
@@ -553,15 +564,18 @@ if __name__ == "__main__":
 	print("Batches generated/loaded, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
 	
 	if(args.mode == 'train'):
-		rIdx1, rIdx2 = [random.randint(0, len(trainInput)) for _ in range(2)]
+		args.print_verbose("Size of sampleBatch: %d" % sample[2])
+		rIdx1, rIdx2 = np.random.randint(sample[2], size=2)
+		srcWordToId = embeddingTuple[0][0]
+		endTokenId = srcWordToId[args.end_token]
 		def evaluationFunction(extraArgs):
 			iteration, losses = extraArgs
 			trainResult, inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
 			_, correctOutput, _, trimLength, trainInput = sample
-			print(stripResultArray(trainInput[rIdx1]), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx1]), '\n= ', stripResultArray(correctOutput[rIdx1]))
-			print(stripResultArray(trainInput[rIdx1]), '\n=> INFER: ', stripResultArray(inferResult[rIdx1]), '\n= ', stripResultArray(correctOutput[rIdx1]))
-			print(stripResultArray(trainInput[rIdx2]), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx2]), '\n= ', stripResultArray(correctOutput[rIdx2]))
-			print(stripResultArray(trainInput[rIdx2]), '\n=> INFER: ', stripResultArray(inferResult[rIdx2]), '\n= ', stripResultArray(correctOutput[rIdx2]))
+			print(stripResultArray(trainInput[rIdx1], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
+			print(stripResultArray(trainInput[rIdx1], endTokenId), '\n=> INFER: ', stripResultArray(inferResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
+			print(stripResultArray(trainInput[rIdx2], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
+			print(stripResultArray(trainInput[rIdx2], endTokenId), '\n=> INFER: ', stripResultArray(inferResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
 			trainResult = calculateBleu(correctOutput, trainResult, trimLength)
 			inferResult = calculateBleu(correctOutput, inferResult, trimLength)
 			print("Iteration %d, time passed %.2fs, BLEU score %2.2f(@train) and %2.2f(@infer) " % (iteration, getTimer(), trainResult * 100.0, inferResult * 100.0))
