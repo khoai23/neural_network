@@ -6,7 +6,7 @@ from calculatebleu import *
 
 def getVocabFromVocabFile(fileDir):
 	file = io.open(fileDir, 'r', encoding='utf-8')
-	listVocab = file.readlines()
+	listVocab = [word.strip("\n ") for word in file.readlines()]
 	file.close()
 	return listVocab
 
@@ -28,9 +28,9 @@ def getSentencesFromFile(fileDir, splitToken=' '):
 	result = []
 	for line in lines:
 		if(line.find(splitToken) >= 0):
-			result.append(line.split(splitToken))
+			result.append(line.strip().split(splitToken))
 		else:
-			result.append([line])
+			result.append([line.strip()])
 	return result
 	
 def createSentenceCouplingFromFile(args):
@@ -194,6 +194,10 @@ def createSession(args, embedding):
 	inferTrainOp = builder.createOptimizer({'loss':loss[1], 'mode':'adam', 'trainingRate':0.001})
 	# initiate the session
 	session.run(tf.global_variables_initializer())
+	
+	if(args.verbose):
+		for key in settingDict:
+			args.print_verbose("{}:{}".format(key, settingDict[key]))
 	
 	return session, [input, output, decoderInput], [batchSize, outputLengthList, maximumUnrolling, logits, outputIds], [[loss[0], trainingTrainOp], [loss[1], inferTrainOp]]
 	
@@ -454,6 +458,7 @@ def calculateBleu(correct, result, trimData=None):
 	
 def stripResultArray(sentence, token):
 	# remove all token at the end of the sentence save one
+	# print(token)
 	if(isinstance(sentence, np.ndarray)):
 		sentence = sentence.tolist()
 	try:
@@ -461,6 +466,44 @@ def stripResultArray(sentence, token):
 	except ValueError:
 		pass
 	return sentence
+	
+def paramsSaveList(str):
+	if(str == 'all'):
+		return False, []
+	elif(str[0] not in "ie"):
+		raise argparse.ArgumentTypeError("Must be i/e @save_params")
+	mode = str[0] == i
+	paramList = str.strip("[] ").split(" ,")
+	return mode, paramList
+	
+def tryLoadOrSaveParams(args):
+	if(args.params_path is None and (args.load_params or args.save_params)):
+		if(args.verbose):
+			print("Params path not found, default to save_path.")
+		args.params_path = os.path.join(args.directory, args.save_path)
+	if(".params" not in args.params_path):
+		args.params_path += ".params"
+	
+	if(args.load_params):
+		paramFile = io.open(args.params_path, 'rb')
+		paramValues = pickle.load(paramFile)
+		paramFile.close()
+		for param in paramValues:
+			setattr(args, param, paramValues[param])
+	elif(args.save_params):
+		include_save_mode, listParams = args.save_params
+		if(include_save_mode):
+			# Save all params taken in this mode
+			listParams = [param for param in listParams if param in vars(args)]
+		else:
+			# Exclude all params in this mode
+			listParams = [param for param in vars(args) if param not in listParams]
+		if(len(listParams) == 0):
+			raise argparse.ArgumentTypeError("Params list @save_params invalid.")
+		dictParams = dict((param, getattr(args, param)) for param in listParams)
+		paramFile = io.open(args.params_path, 'wb')
+		pickle.dump(dictParams, paramFile)
+		paramFile.close()
 	
 if __name__ == "__main__":
 	# Run argparse
@@ -490,11 +533,15 @@ if __name__ == "__main__":
 	parser.add_argument('--evaluation_step', type=int, default=20, help='For each evaluation_step epoch, run the check for accuracy. Default 20.')
 	parser.add_argument('--maximum_sentence_length', type=int, default=50, help='Maximum length of sentences. Default 50.')
 	parser.add_argument('--batch_size', type=int, default=128, help='Size of mini-batch for training. Default 128.')
-	parser.add_argument('--load_params', type=str, default=None, help='Use a json file as setting. All arguments will be overwritten. NOT WORKING AT THE MOMENT.')
+	parser.add_argument('--load_params', action='store_true', help='Use a json or pickle file as setting. All arguments found in file will be overwritten.')
+	parser.add_argument('--save_params', type=paramsSaveList, default=None, help='Save the current params, use i[] or e[] for including(only save the specified) or excluding(save all but the specified)')
+	parser.add_argument('--params_mode', type=str, default='pickle', help='Pickle or JSON. JSON not implemented in the near future')
+	parser.add_argument('-p', '--params_path', type=str, default=None, help='The path of params. If not specified, take save_path as subtitution. Will cause exception as normal in load_params.')
 	args = parser.parse_args()
 	
-	# args.directory = 'data\\vietchina'
+	tryLoadOrSaveParams(args)
 	
+	# args.directory = 'data\\vietchina'
 	# args.src_dict_file = 'vi_tokenized.embedding.bin'
 	# args.tgt_dict_file = 'ch_tokenized.embedding.bin'
 	args.src_dict_file = args.src + args.embedding_file_name if(args.prefix) else args.embedding_file_name + '.' + args.src
@@ -510,13 +557,13 @@ if __name__ == "__main__":
 	# args.import_default_dict = True
 	# args.maximum_sentence_length = 50
 	# args.batch_size = 128
+	
 	if(args.verbose):
 		args.print_verbose = print
 	else:
-		def _(*argv):
+		def _(*argv, **kwargs):
 			pass
 		args.print_verbose = _
-	
 	if(args.read_mode == 'vocab'):
 		# in vocab mode, must train the embedding as well
 		args.train_embedding = True
@@ -569,8 +616,8 @@ if __name__ == "__main__":
 	if(args.mode == 'train'):
 		args.print_verbose("Size of sampleBatch: %d" % sample[2])
 		rIdx1, rIdx2 = np.random.randint(sample[2], size=2)
-		srcWordToId = embeddingTuple[0][0]
-		endTokenId = srcWordToId[args.end_token]
+		tgtWordToId = embeddingTuple[1][0]
+		endTokenId = tgtWordToId[args.end_token]
 		def evaluationFunction(extraArgs):
 			iteration, losses = extraArgs
 			trainResult, inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
