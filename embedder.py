@@ -3,6 +3,7 @@ import sys, re, argparse, io, time, pickle
 from ffBuilder import *
 from exampleBuilder import *
 import numpy as np
+from collection import OrderedDict
 
 conllRegex = re.compile("(\d+)\t(.+)\t_\t([\w$\.,:\"\'-]+)\t([\w$\.,:\"\'-]+)\t_\t(\d+)\t(\w+)")
 WORD_WINDOW = 2
@@ -388,11 +389,11 @@ def exportEmbedding(exportMode, outputDir, outputExt, wordDict, resultMatrixTupl
 			writeWordToFile(file, word, resultMatrix[idx])
 		file.close()
 	elif(exportMode == "binary" or exportMode == "binary_full"):
-		# Only export the normal version in normal binary, since the normalized one can be made from the full
+		# Only export the normal version in normal binary, since the normalized one can be made from it
 		# use pickle
-		normalDict = {}
+		normalDict = OrderedDict()
 		if("full" in exportMode):
-			normalizedDict = {}
+			normalizedDict = OrderedDict()
 		assert len(wordDict) == len(resultMatrixTuple[0]) and len(wordDict) == len(resultMatrixTuple[1])
 		for word in wordDict:
 			idx = wordDict[word]
