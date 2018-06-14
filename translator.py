@@ -44,8 +44,8 @@ def createSentenceCouplingFromFile(args):
 		if(len(srcSentences[i]) <= args.maximum_sentence_length and len(tgtSentences[i]) <= args.maximum_sentence_length):
 			coupling.append((srcSentences[i], tgtSentences[i]))
 	args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
-	# Sort by number of words in source sentences
-	coupling = sorted(coupling, key=lambda couple:len(couple[0]))
+	# Sort by number of words in output sentences
+	coupling = sorted(coupling, key=lambda couple:len(couple[1]))
 	if(args.dev_file_name):
 		# Try to get testing values
 		srcDev = args.src + args.dev_file_name if(args.prefix) else args.dev_file_name + '.' + args.src
@@ -65,6 +65,7 @@ def createSentenceCouplingFromFile(args):
 		otherCoupling = None
 	return coupling, otherCoupling
 
+	
 def createEmbeddingCouplingFromFile(args):
 	srcDict = getEmbeddingFromFile(os.path.join(args.directory, args.src_dict_file), args.import_default_dict)
 	tgtDict = getEmbeddingFromFile(os.path.join(args.directory, args.tgt_dict_file), args.import_default_dict)
@@ -154,7 +155,7 @@ def createSession(args, embedding):
 	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
 	
 	session = tf.Session()
-	# dropout value, used for training. Must reset to 1.0(all) when using the decoding
+	# dropout value, used for training. Must reset to 1.0(all) when infer
 	dropout = tf.placeholder_with_default(1.0, shape=())
 	# input in shape (batchSize, inputSize) - not using timemayor
 	input = tf.placeholder(shape=[None, None], dtype=tf.int32)
@@ -167,7 +168,9 @@ def createSession(args, embedding):
 	# craft the output in shape (batchSize, outputSize)
 	output = tf.placeholder(shape=[None, None], dtype=tf.int32)
 	decoderInput = tf.placeholder(shape=[None, None], dtype=tf.int32)
-	# the outputLengthList is the length of the sentence supposed to be output. Used to create loss function
+	# the inputLengthList is the length of the encoding sentence, necessary for attention to accurately select within the correct input sentence
+	inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32)
+	# the outputLengthList is the length of the sentence supposed to be output. Used to create somewhat more accurate loss function
 	outputLengthList = tf.placeholder(shape=[None], dtype=tf.int32)
 	# These are the dimension of the batch
 	batchSize = tf.placeholder(shape=(), dtype=tf.int32)
@@ -177,7 +180,7 @@ def createSession(args, embedding):
 	decoderInputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, decoderInput)
 	# decoder will use the encoderState to work, outputVector and tgtEmbeddingVector for lookup check
 	# also need a mode placeholder for switching between decoder helper and the start/end tokenId to search for 
-	startTokenId, endTokenId = tgtEmbeddingDict['<s>'], tgtEmbeddingDict[args.end_token]
+	startTokenId, endTokenId = tgtEmbeddingDict[args.start_token], tgtEmbeddingDict[args.end_token]
 	# mode = tf.placeholder_with_default(True, shape=())
 	# construct the settingDict
 	settingDict['mode'] = False
@@ -185,7 +188,13 @@ def createSession(args, embedding):
 	settingDict['correctResult'] = output; settingDict['outputEmbedding'] = tgtEmbeddingVector; settingDict['layerSize'] = embeddingSize
 	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['decoderOutputSize'] = tgtNumWords
 	settingDict['batchSize'] = batchSize; settingDict['maximumDecoderLength'] = maximumUnrolling; settingDict['decoderInput'] = decoderInputVector
-	
+	if(args.attention):
+		inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32)
+		settingDict['attention'] = args.attention
+		settingDict['encoderOutput'] = encoderOutput
+		settingDict['encoderLengthList'] = inputLengthList
+	else:
+		inputLengthList = None
 	logits, loss, decoderState, outputIds, crossent = builder.createDecoder(settingDict)
 	# TrainingOp function, built on the loss function
 	
@@ -199,31 +208,38 @@ def createSession(args, embedding):
 		for key in settingDict:
 			args.print_verbose("{}:{}".format(key, settingDict[key]))
 	
-	return session, [input, output, decoderInput], [batchSize, outputLengthList, maximumUnrolling, logits, outputIds], [[loss[0], trainingTrainOp], [loss[1], inferTrainOp]]
+	inputOutputTuple = [input, output, decoderInput]
+	configTuple = [inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, outputIds]
+	trainTuple = [[loss[0], trainingTrainOp], [loss[1], inferTrainOp]]
+	
+	return session, inputOutputTuple, configTuple, trainTuple
 	
 def trainSessionOneBatch(args, sessionTuple, batch):
+	## Currently unupdated. Remove.
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	# unpack tensor placeholders to add to feed_dict
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, _ = configTuple
+	inputLengthList, outputLengthList, batchSize, maximumUnrolling, _, _ = configTuple
 	# batch is formatted sets which had been padded into 2d (batchSize, maximumUnrolling) for both input/output
 	# should be formattted as follow
 	feed_dict = {input:batch[0], output:batch[1], batchSize:batch[2], outputLengthList:batch[3], maximumUnrolling:max(batch[3]), decoderInput:batch[4]}
-	loss, _ = session.run(trainTuple[0], feed_dict=feed_dict)
+	loss, _ = session.run(trainTuple[1], feed_dict=feed_dict)
 	return loss
 	
 def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, _, _ = configTuple
+	inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, _ = configTuple
 	avgLosses = [0]
 	useTrainingHelper = True
 	for step in range(args.epoch):
-		args.print_verbose(("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
+		args.print_verbose(None if(not args.train_greedy) else ("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
 		for batch in batches:
 			args.global_steps += 1
-			feed_dict = {input:batch[0], output:batch[1], batchSize:batch[2], outputLengthList:batch[3], maximumUnrolling:max(batch[3]), decoderInput:batch[4]}
-			loss, _ = session.run(trainTuple[0 if useTrainingHelper else 1], feed_dict=feed_dict)
+			trainInput, trainCorrectOutput, trainInputLengthList, trainOutputLengthList, trainDecoderInput = batch
+			feed_dict = {input:trainInput, output:trainCorrectOutput, decoderInput:trainDecoderInput, inputLengthList:trainInputLengthList, outputLengthList:trainOutputLengthList, \
+				batchSize:len(trainInput), maximumUnrolling:max(trainOutputLengthList), dropout:args.dropout}
+			loss, _ = session.run(trainTuple[1 if useTrainingHelper else 0], feed_dict=feed_dict)
 			avgLosses[-1] += loss
 			if(args.verbose and args.global_steps % 1000 == 0):
 				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
@@ -237,45 +253,60 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 def evaluateSession(args, session, dictTuple, sampleBatch):
 	session, inputOutputTuple, configTuple, _ = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, _, outputIds = configTuple
+	inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, outputIds = configTuple
 	_, _, tgtEmbeddingVector = dictTuple[1]
-	feed_dict = {input:sampleBatch[0], batchSize:sampleBatch[2], outputLengthList:sampleBatch[3], maximumUnrolling:max(sampleBatch[3]), decoderInput:sampleBatch[4]}
+	sampleInput, sampleCorrectOutput, sampleInputLengthList, sampleOutputLengthList, sampleDecoderInput = sampleBatch
+	# feed_dict = {input:sampleInput, outputLengthList:sampleOutputLengthList, batchSize:sampleBatch[2], maximumUnrolling:max(sampleBatch[3]), decoderInput:sampleDecoderInput, dropout:1.0}
+	feed_dict = { input:sampleInput, decoderInput:sampleDecoderInput, inputLengthList:sampleInputLengthList, outputLengthList:sampleOutputLengthList, \
+				batchSize:len(sampleInput), maximumUnrolling:max(sampleOutputLengthList), dropout:1.0 }
 	sampleResult = session.run(outputIds, feed_dict=feed_dict)
 	return sampleResult
 
-def generateBatchesFromSentences(args, data, dictTuple, singleBatch=False):
-	srcDictTuple, tgtDictTuple = dictTuple
-	srcDict, tgtDict = srcDictTuple[0], tgtDictTuple[0]
-	unknownPadding = args.unknown_word
-	srcUnknownID, tgtUnknownID = srcDict[unknownPadding], tgtDict[unknownPadding]
-	startTokenPad = [tgtDict[args.start_token]]
+def inferenceSession(args, session, data):
+	session, inputOutputTuple, configTuple, _ = sessionTuple
+	input, _, _ = inputOutputTuple
+	batchSize, _, maximumUnrolling, dropout, outputIds = configTuple
+	inferrenceGreedyOutput, _ = outputIds
+	# Use default values for maximumUnrolling. Defaulted, but just do it to be sure. outputLengthList and decoderInput should not be neccessary as we are calling only GreedyEmbeddingHelper
+	output = []
+	for infInput in data:
+		feed_dict = {input:infInput, batchSize:len(infInput), maximumUnrolling:args.maximum_sentence_length, dropout:1.0}
+		decodeOutput = session.run(inferrenceGreedyOutput, feed_dict=feed_dict)
+		output.append(decodeOutput)
+	return output
+	
+def generateBatchesFromSentences(args, data, embeddingTuple, singleBatch=False):
+	srcDictTuple, tgtDictTuple = embeddingTuple
+	srcWordToId, tgtWordToId = srcDictTuple[0], tgtDictTuple[0]
+	srcUnknownID, tgtUnknownID = srcWordToId[args.unknown_word], tgtWordToId[args.unknown_word]
+	startTokenPad = [tgtWordToId[args.start_token]]
 	# data are binding tuples of (s1, s2) for src-tgt, s1/s2 preprocessed into array of respective words
 	batches = []
 	srcBatch, tgtBatch = [], []
 	for srcSentence, tgtSentence in data:
-		srcSentence = [srcDict.get(word, srcUnknownID) for word in srcSentence]
-		tgtSentence = [tgtDict.get(word, tgtUnknownID) for word in tgtSentence]
+		srcSentence = [srcWordToId.get(word, srcUnknownID) for word in srcSentence]
+		tgtSentence = [tgtWordToId.get(word, tgtUnknownID) for word in tgtSentence]
 		srcBatch.append(srcSentence)
 		tgtBatch.append(tgtSentence)
 		if(len(srcBatch) == args.batch_size and not singleBatch):
 			# Full batch, begin converting. If singleBatch, will not go here
 			assert len(srcBatch) == len(tgtBatch)
-			padMatrix(srcBatch, srcDict[args.end_token])
-			batchLengthList = padMatrix(tgtBatch, tgtDict[args.end_token])
+			inputLengthList = padMatrix(srcBatch, srcWordToId[args.end_token])
+			outputLengthList = padMatrix(tgtBatch, tgtWordToId[args.end_token])
 			tgtInputBatch = [ (startTokenPad + list(tgt))[:-1] for tgt in tgtBatch]
-			batchSize = args.batch_size
-			batches.append((srcBatch, tgtBatch, batchSize, batchLengthList, tgtInputBatch))
+			batches.append((srcBatch, tgtBatch, inputLengthList, outputLengthList, tgtInputBatch))
 			srcBatch, tgtBatch = [], []
 	# Last batch
-	padMatrix(srcBatch, srcDict[args.end_token])
-	batchLengthList = padMatrix(tgtBatch, tgtDict[args.end_token])
+	inputLengthList = padMatrix(srcBatch, srcWordToId[args.end_token])
+	outputLengthList = padMatrix(tgtBatch, tgtWordToId[args.end_token])
 	tgtInputBatch = [ (startTokenPad + list(tgt))[:-1] for tgt in tgtBatch]
 	batchSize = len(srcBatch)
-	batches.append((srcBatch, tgtBatch, batchSize, batchLengthList, tgtInputBatch))
+	batches.append((srcBatch, tgtBatch, inputLengthList, outputLengthList, tgtInputBatch))
 	# Return the processed value
 	return batches
 	
 def generateRandomBatchesFromSet(args, batches, paddingToken):
+	raise Exception("Unfixed @generateRandomBatchesFromSet")
 	# if batch too small, use first available
 	inputPadding, outputPadding, outputStartToken = paddingToken
 	if(len(batches) == 1):
@@ -306,6 +337,26 @@ def generateRandomBatchesFromSet(args, batches, paddingToken):
 	# print([len(piece) for piece in sampleInput], inputMaxLen, np.array(sampleOutput).shape)
 	sampleDecoderInput = [ ([outputStartToken] + list(out))[:-1] for out in sampleOutput]
 	return sampleInput, sampleOutput, len(listSample), sampleLengthList, sampleDecoderInput
+	
+def generateInferenceInputFromFile(args, embeddingTuple):
+	# Will only concern src side and single file
+	inferSentences = getSentencesFromFile(os.path.join(args.directory, args.src_file))
+	srcDictTuple, _ = embeddingTuple
+	srcWordToId = srcDictTuple[0]
+	unknownWordId = srcWordToId[args.unknown_word]
+	# Create input data
+	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in inferSentences]
+	inferSentences = sorted(filter(lambda x: len(x)>args.maximum_sentence_length, inferSentences), key=lambda x:len(x))
+	# Split into smaller batch to avoid overruning the memory with batches too large. 
+	batchedSentences = []
+	while(inferSentences and len(inferSentences) > 0):
+		batchSize = args.batch_size if(args.batch_size > len(inferSentences)) else len(inferSentences)
+		newBatch = inferSentences[:batchSize]
+		inferSentences = None if(batchSize == len(inferSentences)) else inferSentences[batchSize:]
+		# newSize = [len(sentence) for sentence in newBatch]
+		batchedSentences.append(newBatch)
+	args.print_verbose("Number of created batches %d" % len(batchedSentences))
+	return batchedSentences
 	
 def padMatrix(matrix, paddingToken):
 	# find the longest line in the matrix
@@ -439,6 +490,19 @@ def testSavingSession(args, sessionTuple):
 	return session, inputOutputTuple, configTuple, trainTuple
 	sys.exit()
 	
+def outputInferenceToFile(args, embeddingTuple, inferOutput, leftAsIdx=False):
+	outputFilePath = args.tgt + args.output_file_name if(args.prefix) else args.output_file_name + '.' + args.tgt
+	outputFile = io.open(os.path.join(args.directory, outputFilePath), 'w', encoding='utf-8')
+	_, tgtDictTuple = embeddingTuple
+	tgtIdToWord = tgtDictTuple[1]
+	for sentence in inferOutput:
+		if(not leftAsIdx):
+			sentence = [tgtIdToWord[int(wordIdx)] for wordIdx in sentence]
+		sentence = ' '.join(sentence) + '\n'
+		outputFile.write(sentence)
+	outputFile.close()
+	return outputFilePath
+	
 def calculateBleu(correct, result, trimData=None):
 	# calculate the bleu score using correct as baseline
 	assert len(correct) == len(result)
@@ -476,12 +540,12 @@ def paramsSaveList(str):
 	paramList = str.strip("[] ").split(" ,")
 	return mode, paramList
 	
-def tryLoadOrSaveParams(args):
-	if(args.params_path is None and (args.load_params or args.save_params)):
+def tryLoadOrSaveParams(args, exception=None):
+	if(args.params_path is None):
 		if(args.verbose):
 			print("Params path not found, default to save_path.")
 		args.params_path = os.path.join(args.directory, args.save_path)
-	if(".params" not in args.params_path):
+	if(args.params_path and ".params" not in args.params_path):
 		args.params_path += ".params"
 	
 	if(args.load_params):
@@ -498,6 +562,9 @@ def tryLoadOrSaveParams(args):
 		else:
 			# Exclude all params in this mode
 			listParams = [param for param in vars(args) if param not in listParams]
+		if(isinstance(exception, list)):
+			# Some params will be automatically removed regardless of options
+			listParams = filter(lambda x: x in exception, listParams)
 		if(len(listParams) == 0):
 			raise argparse.ArgumentTypeError("Params list @save_params invalid.")
 		dictParams = dict((param, getattr(args, param)) for param in listParams)
@@ -508,14 +575,16 @@ def tryLoadOrSaveParams(args):
 if __name__ == "__main__":
 	# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
-	parser.add_argument('-m','--mode', type=str, default='train', help='Mode to run the file. Currently only train')
+	# OVERALL CONFIG
+	parser.add_argument('-m','--mode', type=str, default='train', help='Mode to run the file. Currently only train|infer')
 	parser.add_argument('--read_mode', type=str, default='embedding', help='Read binary, pickled, dictionary files as embedding, or vocab files. Default embedding')
 	parser.add_argument('--import_default_dict', action='store_false', help='Do not use the varied length original embedding instead of the normalized version.')
 	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be set to True in vocab read_mode.')
 	parser.add_argument('--vocab_init', type=str, default='uniform', help='Choose type of initializer for vocab mode. Default uniform, can be normal(gaussian).')
 	parser.add_argument('--directory', type=str, default=os.path.dirname(os.path.realpath(__file__)), help='The dictionary to keep all the training files. Default to the running directory.')
 	parser.add_argument('-e', '--embedding_file_name', type=str, default='vocab', help='The names of the files for vocab or embedding. Default vocab.')
-	parser.add_argument('-t', '--training_file_name', type=str, default='train', help='The names of the files for training. Default train.')
+	parser.add_argument('-i', '--input_file_name', type=str, default='input', help='The names of the files for training or inference. Default input.')
+	parser.add_argument('-o', '--output_file_name', type=str, default='output', help='The names of the files to write inference result in. Default output.')
 	parser.add_argument('-d', '--dev_file_name', type=str, default=None, help='The names of the files for testing. If not specified, will take a random batch as the test intead.')
 	parser.add_argument('-v', '--verbose', action='store_true', help='Print possibly pointless, particularly pitiful piece.')
 	parser.add_argument('--tgt', type=str, required=True, help='The extension/prefix for the target files.')
@@ -527,19 +596,28 @@ if __name__ == "__main__":
 	parser.add_argument('-s', '--save_path', type=str, default=None, help='Directory to load and save the trained model. Required in training mode.')
 	parser.add_argument('-b', '--batch_file_name', type=str, default=None, help='The names of created batch file for training. If not specified, will try to look for it in save_path with "bat" extension .')
 	parser.add_argument('--save_batch', action='store_true', help='If specified, the batch will be saved to batch_file_name for future training.')
-	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
 	parser.add_argument('--size_hidden_layer', type=int, default=128, help='Size of hidden layer in each cell. Default to 128. Will be rewritten to size of embedding if in embedding read_mode.')
 	parser.add_argument('--epoch', type=int, default=100, help='How many times this model will train on current data. Default 100.')
 	parser.add_argument('--evaluation_step', type=int, default=20, help='For each evaluation_step epoch, run the check for accuracy. Default 20.')
 	parser.add_argument('--maximum_sentence_length', type=int, default=50, help='Maximum length of sentences. Default 50.')
 	parser.add_argument('--batch_size', type=int, default=128, help='Size of mini-batch for training. Default 128.')
+	
+	# SAVE STUFF
 	parser.add_argument('--load_params', action='store_true', help='Use a json or pickle file as setting. All arguments found in file will be overwritten.')
 	parser.add_argument('--save_params', type=paramsSaveList, default=None, help='Save the current params, use i[] or e[] for including(only save the specified) or excluding(save all but the specified)')
 	parser.add_argument('--params_mode', type=str, default='pickle', help='Pickle or JSON. JSON not implemented in the near future')
 	parser.add_argument('-p', '--params_path', type=str, default=None, help='The path of params. If not specified, take save_path as subtitution. Will cause exception as normal in load_params.')
-	args = parser.parse_args()
 	
-	tryLoadOrSaveParams(args)
+	# MODEL CONFIG
+	parser.add_argument('-a', '--attention', type=str, default=None, help='If specified, use attention architecture.')
+	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
+	parser.add_argument('--dropout', type=float, default=1.0, help='The dropout used for training. Will be automatically set to 1.0 in infer mode. Default 1.0')
+	
+	args = parser.parse_args()
+	if(args.load_params or args.save_params):
+		tryLoadOrSaveParams(args, ['mode', 'directory'])
+	if(args.mode == 'infer'):
+		args.dropout = 1.0
 	
 	# args.directory = 'data\\vietchina'
 	# args.src_dict_file = 'vi_tokenized.embedding.bin'
@@ -570,6 +648,9 @@ if __name__ == "__main__":
 	## REMOVE. JUST USE REQUIRED
 	if(args.save_path is None):
 		raise argparse.ArgumentTypeError("No save path for anything. Exiting.")
+	args.src_file = args.src + args.input_file_name if(args.prefix) else args.input_file_name + '.' + args.src
+	args.tgt_file = args.tgt + args.input_file_name if(args.prefix) else args.input_file_name + '.' + args.tgt
+	
 	timer = time.time()
 	def getTimer():
 		return time.time()-timer
@@ -589,33 +670,33 @@ if __name__ == "__main__":
 	print("Creating session done, time passed %.2fs" % getTimer())
 	# testRun(args, sessionTuple, embeddingTuple)
 	
-	# Try to load created batch file as default
-	otherBatchFileName = os.path.join(args.directory, args.save_path + ".bat")
-	if(os.path.isfile(otherBatchFileName) or (args.batch_file_name and os.path.isfile(args.batch_file_name))):
-		# try getting batches saved from previous iteration instead of creating new
-		batchesPath = args.batch_file_name if(not os.path.isfile(otherBatchFileName)) else otherBatchFileName
-		batchesFile = io.open(batchesPath, 'rb')
-		batches = pickle.load(batchesFile)
-		batchesFile.close()
-	else:
-		# If cannot find the data, create from files in direction
-		#try:
-			args.src_file = args.src + args.training_file_name if(args.prefix) else args.training_file_name + '.' + args.src
-			args.tgt_file = args.tgt + args.training_file_name if(args.prefix) else args.training_file_name + '.' + args.tgt
-			# create new batches from the files specified
-			batchesCoupling, sampleCoupling = createSentenceCouplingFromFile(args)
-			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
-			if(sampleCoupling is not None):
-				sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple)[0]
-			elif(args.mode in ['train', 'test']):
-				sample = generateRandomBatchesFromSet(args, batches, (embeddingTuple[0][0][args.end_token], embeddingTuple[1][0][args.end_token], embeddingTuple[1][0][args.start_token]))
-		#except Exception:
-		#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
-	print("Batches generated/loaded, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
 	
 	if(args.mode == 'train'):
-		args.print_verbose("Size of sampleBatch: %d" % sample[2])
-		rIdx1, rIdx2 = np.random.randint(sample[2], size=2)
+		# Try to load created batch file as default
+		otherBatchFileName = os.path.join(args.directory, args.save_path + ".bat")
+		if(os.path.isfile(otherBatchFileName) or (args.batch_file_name and os.path.isfile(args.batch_file_name))):
+			# try getting batches saved from previous iteration instead of creating new
+			batchesPath = args.batch_file_name if(not os.path.isfile(otherBatchFileName)) else otherBatchFileName
+			batchesFile = io.open(batchesPath, 'rb')
+			batches = pickle.load(batchesFile)
+			batchesFile.close()
+		else:
+			# If cannot find the data, create from files in direction
+			#try:
+				# create new batches from the files src_file and tgt_file specified
+				batchesCoupling, sampleCoupling = createSentenceCouplingFromFile(args)
+				batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
+				if(sampleCoupling is not None):
+					sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple)[0]
+				elif(args.mode in ['train', 'test']):
+					sample = generateRandomBatchesFromSet(args, batches, (embeddingTuple[0][0][args.end_token], embeddingTuple[1][0][args.end_token], embeddingTuple[1][0][args.start_token]))
+			#except Exception:
+			#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
+		print("Batches generated/loaded, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
+		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
+		
+		# create random idx to print a sample consistently during evaluation
+		rIdx1, rIdx2 = np.random.randint(len(sample[2]), size=2)
 		tgtWordToId = embeddingTuple[1][0]
 		endTokenId = tgtWordToId[args.end_token]
 		def evaluationFunction(extraArgs):
@@ -632,17 +713,40 @@ if __name__ == "__main__":
 			print("Losses during this cycle: {}".format(losses[-args.evaluation_step:]))
 			# The evaluation decide which model should we be improving if train_greedy is on
 			return not args.train_greedy or trainResult <= inferResult
-		# execute training
+		# evaluate the initialized model. Expect horrendous result
 		evaluationFunction((0, []))
+		# execute training
 		totalLossTrack = trainSession(args, sessionTuple, batches, evaluationFunction)
 	elif(args.mode == 'infer'):
+		# infer will try to read input in file input.src and output to file output.tgt
 		# INCOMPLETED
-		inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
-		_, correctOutput, _, trimLength, trainInput = sample
-		print(trainInput[0], '\n=>', trainResult[0], '\n=', correctOutput[0])
-		print(trainInput[6], '\n=>', trainResult[6], '\n=', correctOutput[6])
-		inferResult = calculateBleu(correctOutput, inferResult, trimLength)
-		print("Inference mode ran, BLEU score %2.2f" % (inferResult * 100.0))
+		if(os.path.isfile(os.path.join(args.directory, args.tgt_file))):
+			# Has coupling possible, use default functions
+			batchesCoupling, _ = createSentenceCouplingFromFile(args)
+			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
+			inferInput = [batch[0] for batch in batches] 
+			correctOutput = [batch[2] for batch in batches] 
+			args.print_verbose("Go with correctOutput and proper batch")
+		else:
+			inferInput = generateInferenceInputFromFile(args, embeddingTuple)
+			correctOutput = None
+			args.print_verbose("Go without correctOutput")
+		inferOutput = inferenceSession(args, sessionTuple, inferInput)
+		
+		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0], '\n=>', inferOutput[0][0])
+		
+		inferOutput = np.concatenate(inferOutput, axis=0)
+		outputFile = outputInferenceToFile(args, embeddingTuple, inferOutput)
+		
+		# Flatten the inferOutput
+		if(correctOutput):
+			# Flatten the correctOutput and trimLength as well
+			correctOutput = np.concatenate(correctOutput, axis=0)
+			trimLength = np.concatenate([batch[3] for batch in batches])
+			inferResult = calculateBleu(correctOutput, inferResult, trimLength)
+			print("Inference mode ran and saved to %s, BLEU score %2.2f, time passed %.2fs" % (outputFile, inferResult * 100.0, getTimer()))
+		else:
+			print("Inference mode ran and saved to %s, time passed %.2fs" % (outputFile, getTimer()))
 	else:
 		raise argparse.ArgumentTypeError("Mode not registered. Please recheck.")
 	if(args.save_path):
@@ -653,4 +757,4 @@ if __name__ == "__main__":
 			batchesFile = io.open(args.batch_file_name, 'wb')
 			pickle.dump(batches, batchesFile)
 			batchesFile.close()
-	print("All task completed, total time passed %.2f" % getTimer())
+	print("All task completed, total time passed %.2fs" % getTimer())

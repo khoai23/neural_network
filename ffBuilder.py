@@ -206,7 +206,6 @@ def createEncoder(settingDict):
 	
 def createDecoder(settingDict):
 	prefix = settingDict.get('prefix', 'encoder')
-	attentionMechanism = settingDict.get('attention', None)
 	isBareMode = settingDict.get('mode', True)
 	# the batchSize/maximumDecoderLength must be a placeholder that is filled during inference
 	batchSize = settingDict['batchSize']; maximumDecoderLength = settingDict['maximumDecoderLength']; outputEmbedding = settingDict['outputEmbedding']
@@ -219,14 +218,17 @@ def createDecoder(settingDict):
 	dropout = settingDict.get('dropout', 1.0)
 	layerSize = settingDict.get('layerSize', decoderOutputSize)
 	layerDepth = settingDict.get('layerDepth', 2)
+	
+	attentionMechanism = settingDict.get('attention', None)
 	if(attentionMechanism is not None):
 		# attention mechanism use encoder output as input?
 		encoderOutput = settingDict['encoderOutput']
-		attentionLayerSize = settingDict.get('attentionLayerSize', 1)
-		if(attentionMechanism == 'luong'):
-			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, encoderOutput)
-		elif(attentionMechanism == 'bahdanau'):
-			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, encoderOutput)
+		encoderLengthList = settingDict['encoderLengthList']
+		# attentionLayerSize = settingDict.get('attentionLayerSize', 1)
+		if('luong' in attentionMechanism):
+			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, encoderOutput, memory_sequence_length=encoderLengthList, scale=('scaled' in attentionMechanism))
+		elif('bahdanau' in attentionMechanism):
+			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, encoderOutput, memory_sequence_length=encoderLengthList, normalize=('norm' in attentionMechanism))
 		else:
 			attentionMechanism = None
 	# Dropout must be a placeholder/operation by now, as encoder will convert it
@@ -234,10 +236,8 @@ def createDecoder(settingDict):
 	# Decoder construction here
 	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout)
 	if(attentionMechanism is not None):
-		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism)
+		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize,)
 	# conversion layer to convert from the hiddenLayers size into vector size if they have a mismatch
-	if(decoderOutputSize != layerSize):
-		decoderCells = tf.contrib.rnn.OutputProjectionWrapper(decoderCells, decoderOutputSize)
 	# Helper for training using the output taken from the encoder outside
 	trainHelper = tf.contrib.seq2seq.TrainingHelper(decoderTrainingInput, tf.fill([batchSize], maximumDecoderLength))
 	# Helper for feeding the output of the current timespan for the inference mode
@@ -248,14 +248,21 @@ def createDecoder(settingDict):
 	else:
 		# Helper using the argmax output as input
 		inferHelper = tf.contrib.seq2seq.GreedyEmbeddingHelper(outputEmbedding, startToken, endToken)
+	# Projection layer
+	projectionLayer = tf.layers.Dense(decoderOutputSize)
+	# create the initial state out of a clone
+	initialState = decoderCells.zero_state(dtype=tf.float32, batch_size=batchSize).clone(cell_state=encoderState)
 	# depending on the mode being training or infer, use either Helper as fit
-	inferDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, inferHelper, encoderState)
-	trainDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, trainHelper, encoderState)
+	inferDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, inferHelper, initialState, output_layer=projectionLayer)
+	trainDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, trainHelper, initialState, output_layer=projectionLayer)
 	# Another bunch of stuff I don't understand. Apparently the outputs and state are being created automatically. Yay.
 	inferOutput, inferDecoderState, _ = tf.contrib.seq2seq.dynamic_decode(inferDecoder, maximum_iterations=maximumDecoderLength)
 	trainOutput, trainDecoderState, _ = tf.contrib.seq2seq.dynamic_decode(trainDecoder)
 	trainLogits = trainOutput.rnn_output
 	inferLogits = inferOutput.rnn_output
+	'''if(decoderOutputSize != layerSize):
+		trainLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=None)
+		inferLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=True)'''
 	# sample_id is the argmax of the output. It can be used during 
 	sample_id = trainOutput.sample_id
 	# correctResult in bareMode are [batchSize, maximumDecoderLength, vectorSize] represent correct value expected.
