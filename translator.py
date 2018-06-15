@@ -45,7 +45,7 @@ def createSentenceCouplingFromFile(args):
 			coupling.append((srcSentences[i], tgtSentences[i]))
 	args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
 	# Sort by number of words in output sentences
-	coupling = sorted(coupling, key=lambda couple:len(couple[1]))
+	coupling = sorted(coupling, key=lambda couple: (len(couple[1]), len(couple[1])))
 	if(args.dev_file_name):
 		# Try to get testing values
 		srcDev = args.src + args.dev_file_name if(args.prefix) else args.dev_file_name + '.' + args.src
