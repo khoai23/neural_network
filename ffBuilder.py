@@ -343,6 +343,8 @@ def createOptimizer(settingDict):
 		# warmUp and decay scheme. Customize later
 		if('globalStep' in settingDict):
 			globalStep = settingDict['globalStep']
+			assert isinstance(globalStep, tf.Variable)
+			incrementGlobalStep = tf.assign_add(globalStep, 1)
 		if('warmupTraining' in settingDict and 'globalStep' in locals()):
 			warmupStep, warmupThreshold = settingDict['warmupTraining']
 			warmupFactor = tf.exp(-2 / warmupStep)
@@ -356,8 +358,13 @@ def createOptimizer(settingDict):
 			# decayFactor = warmupFactor**(tf.to_float(warmupStep - globalStep))
 			trainingRate = tf.cond(globalStep >= decayThreshold,
 									lambda: tf.train.exponential_decay(trainingRate,(globalStep - decayThreshold), decayStep, decayFactor, staircase=True),
-									lambda: trainingRate)
-		return tf.train.GradientDescentOptimizer(learning_rate=trainingRate).minimize(loss)
+									lambda: trainingRate)	
+		
+		trainingOp = tf.train.GradientDescentOptimizer(trainingRate).minimize(loss)
+		if('globalStep' in locals()):
+			return tf.group(trainingOp, incrementGlobalStep)
+		else:
+			return trainingOp
 	elif(mode == 'adam'):
 		if('trainingRate' not in settingDict):
 			return tf.train.AdamOptimizer().minimize(loss)
@@ -398,7 +405,7 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 		unrollingMask = tf.range(4, 0, -4.0 / tf.to_float(maxUnrolling))
 		target_weights = tf.multiply(target_weights, unrollingMask)
 	# the loss function being the reduce mean of the entire batch
-	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="subtract")) / tf.to_float(batchSize)
+	loss = tf.reduce_sum(tf.multiply(tf.clip_by_value(crossent,1e-10,100), target_weights, name="subtract")) / tf.to_float(batchSize)
 	return loss, target_weights
 	
 def createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=None):

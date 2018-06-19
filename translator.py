@@ -154,7 +154,9 @@ def createSession(args, embedding):
 	srcEmbeddingVector = tf.Variable(srcEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
 	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
 	
-	session = tf.Session()
+	config = tf.ConfigProto()
+	config.gpu_options.allow_growth = True
+	session = tf.Session(config=config)
 	# dropout value, used for training. Must reset to 1.0(all) when infer
 	dropout = tf.placeholder_with_default(1.0, shape=())
 	# input in shape (batchSize, inputSize) - not using timemayor
@@ -197,16 +199,26 @@ def createSession(args, embedding):
 		inputLengthList = None
 	logits, loss, decoderState, outputIds, crossent = builder.createDecoder(settingDict)
 	# TrainingOp function, built on the loss function
+	settingDict['mode'] = args.optimizer
+	settingDict['trainingRate'] = args.learning_rate
+	settingDict['globalStep'] = tf.Variable(0, trainable=False, dtype=tf.int32)
+	if(args.warmup_threshold > 0):
+		if(args.warmup_steps <= 0):
+			args.warmup_steps = args.warmup_threshold // 5
+		settingDict['warmupTraining'] = (args.warmup_steps, args.warmup_threshold)
+	if(args.decay_threshold >= 0):
+		settingDict['decayTraining'] = (args.decay_steps, args.decay_threshold, args.decay_factor)
 	
-	trainingTrainOp = builder.createOptimizer({'loss':loss[0], 'mode':'adam', 'trainingRate':0.001})
-	# inferTrainOp = builder.createOptimizer({'loss':loss[1], 'mode':'sgd', 'trainingRate':1.0})
-	inferTrainOp = builder.createOptimizer({'loss':loss[1], 'mode':'adam', 'trainingRate':0.001})
+	settingDict['loss'] = loss[0]
+	trainingTrainOp = builder.createOptimizer(settingDict)
+	settingDict['loss'] = loss[1]	
+	inferTrainOp = builder.createOptimizer(settingDict)
 	# initiate the session
 	session.run(tf.global_variables_initializer())
 	
 	if(args.verbose):
 		for key in settingDict:
-			args.print_verbose("{}:{}".format(key, settingDict[key]))
+			args.print_verbose("{}:{}".format(key, type(settingDict[key])))
 	
 	inputOutputTuple = [input, output, decoderInput]
 	configTuple = [inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, outputIds]
@@ -612,13 +624,21 @@ if __name__ == "__main__":
 	parser.add_argument('-a', '--attention', type=str, default=None, help='If specified, use attention architecture.')
 	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
 	parser.add_argument('--dropout', type=float, default=1.0, help='The dropout used for training. Will be automatically set to 1.0 in infer mode. Default 1.0')
-	
+	parser.add_argument('--optimizer', type=str, default='sgd', help='The optimizer used for training. Default SGD.')
+	parser.add_argument('--learning_rate', type=float, default=None, help='The learning rate used for training. Default 1.0for SGD and 0.001 for Adam.')
+	parser.add_argument('--warmup_threshold', type=int, default=0, help='The warmup step used for learning rate (on global steps). If unspecified, will not use warmup.')
+	parser.add_argument('--warmup_steps', type=int, default=0, help='The warmup factor for steps. Default 1/5 of the threshold.')
+	parser.add_argument('--decay_steps', type=int, default=1000, help='The steps to staircase the learning rate decay (on global steps). Default 1000.')
+	parser.add_argument('--decay_threshold', type=int, default=-1, help='The threshold to begin decay. If unspecified, will not use decay.')
+	parser.add_argument('--decay_factor', type=float, default=0.5, help='The factor to multiply at each decay_steps. Default 0.5')
+
 	args = parser.parse_args()
 	if(args.load_params or args.save_params):
 		tryLoadOrSaveParams(args, ['mode', 'directory'])
 	if(args.mode == 'infer'):
 		args.dropout = 1.0
-	
+	if(args.learning_rate is None):
+		args.learning_rate = 0.001 if(args.optimizer == 'adam') else 1.0
 	# args.directory = 'data\\vietchina'
 	# args.src_dict_file = 'vi_tokenized.embedding.bin'
 	# args.tgt_dict_file = 'ch_tokenized.embedding.bin'
