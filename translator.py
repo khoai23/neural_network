@@ -245,7 +245,8 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 	avgLosses = [0]
 	useTrainingHelper = True
 	for step in range(args.epoch):
-		args.print_verbose(None if(not args.train_greedy) else ("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
+		if(not args.train_greedy):
+			args.print_verbose(("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
 		for batch in batches:
 			args.global_steps += 1
 			trainInput, trainCorrectOutput, trainInputLengthList, trainOutputLengthList, trainDecoderInput = batch
