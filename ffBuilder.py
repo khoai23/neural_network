@@ -332,7 +332,7 @@ def createSingleDecoder(isTrainingMode, settingDict):
 	
 	
 def createOptimizer(settingDict):
-	assert all(['mode', 'loss']) in settingDict
+	assert all(key in settingDict for key in ['mode', 'loss'])
 	loss = settingDict['loss']
 	mode = settingDict['mode']
 	if(mode == 'sgd'):
@@ -375,7 +375,7 @@ def createOptimizer(settingDict):
 		raise Exception("Optimizer not specified.")
 	
 def configureGradientOptions(optimizer, settingDict):
-	assert all(['colocateGradient', 'clipGradient', 'globalStep', 'loss']) in settingDict
+	assert all(key in settingDict for key in ['colocateGradient', 'clipGradient', 'globalStep', 'loss'])
 	loss = settingDict['loss']
 	affectedParams = tf.trainable_variables()
 	colocateGradient = settingDict['colocateGradient']
