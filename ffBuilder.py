@@ -417,7 +417,7 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 		unrollingMask = tf.range(4, 0, -4.0 / tf.to_float(maxUnrolling))
 		target_weights = tf.multiply(target_weights, unrollingMask)
 	# the loss function being the reduce mean of the entire batch
-	loss = tf.reduce_sum(tf.multiply(tf.clip_by_value(crossent,1e-10,100), target_weights, name="subtract")) / tf.to_float(batchSize)
+	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="subtract")) / tf.to_float(batchSize)
 	return loss, target_weights
 	
 def createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=None):
