@@ -217,8 +217,8 @@ def createSession(args, embedding):
 	# globalStep & loss already in
 	settingDict['colocateGradient'] = args.colocate
 	settingDict['clipGradient'] = args.gradient_clipping
-	trainingGradient = builder.configureGradientOptions(loss[0], trainingTrainOp[0])
-	inferGradient = builder.configureGradientOptions(loss[0], trainingTrainOp[0])
+	trainingGradient = builder.configureGradientOptions(trainingTrainOp[0], settingDict)
+	inferGradient = builder.configureGradientOptions(trainingTrainOp[0], settingDict)
 	if(trainingTrainOp[1] is not None and inferTrainOp[1] is not None):
 		# incrementGlobalStep is available, group them up
 		trainingTrainOp = tf.group(trainingGradient, trainingTrainOp[1])
