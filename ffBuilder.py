@@ -276,7 +276,6 @@ def createDecoder(settingDict):
 		secondaryLossOp, secondaryCrossent = createSoftmaxDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength, True)
 		return (inferLogits, trainLogits), (lossOp, secondaryLossOp), (inferDecoderState, trainDecoderState), (tf.argmax(inferLogits, axis=2), tf.argmax(trainLogits, axis=2)), (crossent, secondaryCrossent)
 	
-	
 def createSingleDecoder(isTrainingMode, settingDict):
 	prefix = settingDict.get('prefix', 'decoder')
 	attentionMechanism = settingDict.get('attention', None)
@@ -360,19 +359,32 @@ def createOptimizer(settingDict):
 									lambda: tf.train.exponential_decay(trainingRate,(globalStep - decayThreshold), decayStep, decayFactor, staircase=True),
 									lambda: trainingRate)	
 		
-		trainingOp = tf.train.GradientDescentOptimizer(trainingRate).minimize(loss)
+		trainingOp = tf.train.GradientDescentOptimizer(trainingRate)
 		if('globalStep' in locals()):
-			return tf.group(trainingOp, incrementGlobalStep)
+			return trainingOp, incrementGlobalStep
 		else:
-			return trainingOp
+			return trainingOp, None
 	elif(mode == 'adam'):
 		if('trainingRate' not in settingDict):
-			return tf.train.AdamOptimizer().minimize(loss)
+			return tf.train.AdamOptimizer(), None
 		else:
 			trainingRate = settingDict['trainingRate']
-			return tf.train.AdamOptimizer(trainingRate).minimize(loss)
+			return tf.train.AdamOptimizer(trainingRate), None
 	else:
 		raise Exception("Optimizer not specified.")
+	
+def configureGradientOptions(optimizer, settingDict):
+	assert all('colocateGradient', 'clipGradient', 'globalStep', 'loss') in settingDict
+	loss = settingDict['loss']
+	affectedParams = tf.trainable_variables()
+	colocateGradient = settingDict['colocateGradient']
+	# The gradient of all params affected 
+	gradients = tf.gradients(loss, affectedParams, colocate_gradients_with_ops=colocateGradient)
+	# The maximum value of gradient allowed
+	gradientClipValue = settingDict['clipGradient']
+	gradientClipValue = tf.clip_by_global_norm(gradients, gradientClipValue)
+	globalStep = settingDict['globalStep']
+	return optimizer.apply_gradients( zip(gradientClipValue, affectedParams), global_step=globalStep)
 	
 def createDecoderLossOperation(logits, correctResult, sequenceLengthList, batchSize, maxUnrolling, extraWeightTowardTop=False):
 	# the maximum unrolling and batchSize for the encoder during the entire batch. correctResult should be [batchSize, sentenceSize, vectorSize], hence [1] and [0]

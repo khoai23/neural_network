@@ -211,8 +211,21 @@ def createSession(args, embedding):
 	
 	settingDict['loss'] = loss[0]
 	trainingTrainOp = builder.createOptimizer(settingDict)
-	settingDict['loss'] = loss[1]	
+	settingDict['loss'] = loss[1]
 	inferTrainOp = builder.createOptimizer(settingDict)
+	# All ops will return (optimizer, incrementGlobalStep) tuple, the second one only available in sgd warmup/decay
+	# globalStep & loss already in
+	settingDict['colocateGradient'] = args.colocate
+	settingDict['clipGradient'] = args.gradient_clipping
+	trainingGradient = builder.configureGradientOption(loss[0], trainingTrainOp[0])
+	inferGradient = builder.configureGradientOption(loss[0], trainingTrainOp[0])
+	if(trainingTrainOp[1] is not None and inferTrainOp[1] is not None):
+		# incrementGlobalStep is available, group them up
+		trainingTrainOp = tf.group(trainingGradient, trainingTrainOp[1])
+		inferTrainOp = tf.group(inferGradient, inferTrainOp[1])
+	else:
+		trainingTrainOp = trainingGradient
+		inferTrainOp = inferGradient
 	# initiate the session
 	session.run(tf.global_variables_initializer())
 	
@@ -624,6 +637,7 @@ if __name__ == "__main__":
 	# MODEL CONFIG
 	parser.add_argument('-a', '--attention', type=str, default=None, help='If specified, use attention architecture.')
 	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
+	parser.add_argument('--colocate', action='store_true', help='If specified, do colocate regarding gradient calculation.')
 	parser.add_argument('--dropout', type=float, default=1.0, help='The dropout used for training. Will be automatically set to 1.0 in infer mode. Default 1.0')
 	parser.add_argument('--optimizer', type=str, default='sgd', help='The optimizer used for training. Default SGD.')
 	parser.add_argument('--learning_rate', type=float, default=None, help='The learning rate used for training. Default 1.0for SGD and 0.001 for Adam.')
@@ -632,6 +646,7 @@ if __name__ == "__main__":
 	parser.add_argument('--decay_steps', type=int, default=1000, help='The steps to staircase the learning rate decay (on global steps). Default 1000.')
 	parser.add_argument('--decay_threshold', type=int, default=-1, help='The threshold to begin decay. If unspecified, will not use decay.')
 	parser.add_argument('--decay_factor', type=float, default=0.5, help='The factor to multiply at each decay_steps. Default 0.5')
+	parser.add_argument('--gradient_clipping', type=float, default=5.0, help='The maximum value for gradient. Default 5.0')
 
 	args = parser.parse_args()
 	if(args.load_params or args.save_params):
