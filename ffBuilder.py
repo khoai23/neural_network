@@ -383,9 +383,11 @@ def configureGradientOptions(optimizer, settingDict):
 	gradients = tf.gradients(loss, affectedParams, colocate_gradients_with_ops=colocateGradient)
 	# The maximum value of gradient allowed
 	gradientClipValue = settingDict['clipGradient']
-	gradientClipValue = tf.clip_by_global_norm(gradients, gradientClipValue)
+	gradientClipValue, globalNorm = tf.clip_by_global_norm(gradients, gradientClipValue)
+	zippedGradientList = list(zip(gradientClipValue, affectedParams))
+	# print(zippedGradientList[0])
 	globalStep = settingDict['globalStep']
-	return optimizer.apply_gradients( zip(gradientClipValue, affectedParams), global_step=globalStep)
+	return optimizer.apply_gradients(zippedGradientList, global_step=globalStep)
 	
 def createDecoderLossOperation(logits, correctResult, sequenceLengthList, batchSize, maxUnrolling, extraWeightTowardTop=False):
 	# the maximum unrolling and batchSize for the encoder during the entire batch. correctResult should be [batchSize, sentenceSize, vectorSize], hence [1] and [0]
