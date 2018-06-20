@@ -673,11 +673,12 @@ if __name__ == "__main__":
 	# args.batch_size = 128
 	
 	if(args.verbose):
-		args.print_verbose = print
+		def _(*argv, **kwargs):
+			print(*argv, **kwargs)
 	else:
 		def _(*argv, **kwargs):
 			pass
-		args.print_verbose = _
+	args.print_verbose = _
 	if(args.read_mode == 'vocab'):
 		# in vocab mode, must train the embedding as well
 		args.train_embedding = True
