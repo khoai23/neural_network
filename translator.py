@@ -138,8 +138,8 @@ def createSession(args, embedding):
 	if(srcEmbeddingVector is None or tgtEmbeddingVector is None):
 		# initialize in vocab mode - random due to arguments
 		embeddingSize = args.size_hidden_layer
-		minVal, maxVal = args.initialize_range
 		tgtNumWords = len(tgtEmbeddingDict)
+		minVal, maxVal = args.initialize_range
 		if(args.vocab_init in ['gaussian', 'normal', 'xavier']):
 			srcEmbeddingVector = tf.random_normal([len(srcEmbeddingDict), embeddingSize], mean=(maxVal+minVal)/2, stddev=(maxVal-minVal)/2)
 			tgtEmbeddingVector = tf.random_normal([len(tgtEmbeddingDict), embeddingSize], mean=(maxVal+minVal)/2, stddev=(maxVal-minVal)/2)
@@ -151,12 +151,18 @@ def createSession(args, embedding):
 		embeddingSize = tgtEmbeddingVector.shape[1]
 		tgtNumWords = tgtEmbeddingVector.shape[0]
 		assert tgtNumWords == len(tgtEmbeddingDict)
+	
 	srcEmbeddingVector = tf.Variable(srcEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
 	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
 	
 	config = tf.ConfigProto()
 	config.gpu_options.allow_growth = True
 	session = tf.Session(config=config)
+	# set the initializer to the entire session according to args.vocab_init
+	minVal, maxVal = args.initialize_range
+	initializer = tf.random_normal_initializer(mean=(maxVal+minVal)/2, stddev=(maxVal-minVal)/2) if(args.vocab_init in ['gaussian', 'normal', 'xavier']) \
+			else  tf.random_uniform_initializer(minval=minVal, maxval=maxVal)
+	tf.get_variable_scope().set_initializer(initializer)
 	# dropout value, used for training. Must reset to 1.0(all) when infer
 	dropout = tf.placeholder_with_default(1.0, shape=())
 	# input in shape (batchSize, inputSize) - not using timemayor
@@ -673,12 +679,12 @@ if __name__ == "__main__":
 	# args.batch_size = 128
 	
 	if(args.verbose):
-		def _(*argv, **kwargs):
+		def verbose(*argv, **kwargs):
 			print(*argv, **kwargs)
 	else:
-		def _(*argv, **kwargs):
+		def verbose(*argv, **kwargs):
 			pass
-	args.print_verbose = _
+	args.print_verbose = verbose
 	if(args.read_mode == 'vocab'):
 		# in vocab mode, must train the embedding as well
 		args.train_embedding = True
