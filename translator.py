@@ -270,7 +270,7 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			trainInput, trainCorrectOutput, trainInputLengthList, trainOutputLengthList, trainDecoderInput = batch
 			feed_dict = {input:trainInput, output:trainCorrectOutput, decoderInput:trainDecoderInput, inputLengthList:trainInputLengthList, outputLengthList:trainOutputLengthList, \
 				batchSize:len(trainInput), maximumUnrolling:max(trainOutputLengthList), dropout:args.dropout}
-			loss, _ = session.run(trainTuple[1 if useTrainingHelper else 0], feed_dict=feed_dict)
+			loss, _ = session.run(trainTuple[0 if useTrainingHelper else 1], feed_dict=feed_dict)
 			if(np.isnan(loss)):
 				print("Loss nan @ global_step {}, feed_dict {}".format(args.global_steps, feed_dict))
 				sys.exit(0)

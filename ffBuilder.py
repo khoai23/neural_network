@@ -270,7 +270,7 @@ def createDecoder(settingDict):
 	if(isBareMode):
 		lossOp, crossent = createDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
 		secondaryLossOp, secondaryCrossent = createDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength, True)
-		return (inferLogits, trainLogits), (lossOp, secondaryLossOp), (inferDecoderState, trainDecoderState), (crossent, secondaryCrossent)
+		return (trainLogits, inferLogits), (lossOp, secondaryLossOp), (trainDecoderState, inferDecoderState), (crossent, secondaryCrossent)
 	else:
 		lossOp, crossent = createSoftmaxDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
 		secondaryLossOp, secondaryCrossent = createSoftmaxDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength, True)
