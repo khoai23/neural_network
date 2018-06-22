@@ -559,7 +559,7 @@ def calculateBleu(correct, result, trimData=None):
 	
 def checkNan(matrix):
 	isNan = np.isnan(matrix)
-	while(isNan is not bool):
+	while(isinstance(isNan, (list, tuple))):
 		isNan = isNan.any()
 	return isNan
 	
