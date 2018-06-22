@@ -271,6 +271,12 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			feed_dict = {input:trainInput, output:trainCorrectOutput, decoderInput:trainDecoderInput, inputLengthList:trainInputLengthList, outputLengthList:trainOutputLengthList, \
 				batchSize:len(trainInput), maximumUnrolling:max(trainOutputLengthList), dropout:args.dropout}
 			loss, _ = session.run(trainTuple[1 if useTrainingHelper else 0], feed_dict=feed_dict)
+			if(np.isnan(loss)):
+				for key in feed_dict:
+					if(checkNan(feed_dict[key])):
+						print(key, feed_dict[key])
+				print("Loss nan @ global_step {}, feed_dict {}".format(args.global_steps, feed_dict))
+				sys.exit(0)
 			avgLosses[-1] += loss
 			if(args.verbose and args.global_steps % 1000 == 0):
 				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
@@ -550,6 +556,12 @@ def calculateBleu(correct, result, trimData=None):
 		processedCorrect.append(' '.join(map(str, source)))
 		processedResult.append(' '.join(map(str, target)))
 	return BLEU(processedResult, [processedCorrect])
+	
+def checkNan(matrix):
+	isNan = np.isnan(matrix)
+	while(isNan is not bool):
+		isNan = isNan.any()
+	return isNan
 	
 def stripResultArray(sentence, token):
 	# remove all token at the end of the sentence save one
