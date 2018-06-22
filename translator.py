@@ -162,6 +162,8 @@ def createSession(args, embedding):
 	minVal, maxVal = args.initialize_range
 	initializer = tf.random_normal_initializer(mean=(maxVal+minVal)/2, stddev=(maxVal-minVal)/2) if(args.vocab_init in ['gaussian', 'normal', 'xavier']) \
 			else  tf.random_uniform_initializer(minval=minVal, maxval=maxVal)
+	args.print_verbose("Initializer range (%d - %d), type %s" % (minVal, maxVal, args.vocab_init))
+	
 	tf.get_variable_scope().set_initializer(initializer)
 	# dropout value, used for training. Must reset to 1.0(all) when infer
 	dropout = tf.placeholder_with_default(1.0, shape=())
@@ -208,6 +210,7 @@ def createSession(args, embedding):
 	settingDict['mode'] = args.optimizer
 	settingDict['trainingRate'] = args.learning_rate
 	settingDict['globalStep'] = tf.Variable(0, trainable=False, dtype=tf.int32)
+	settingDict['incrementGlobalStep'] = tf.assign_add(globalStep, 1)
 	if(args.warmup_threshold > 0):
 		if(args.warmup_steps <= 0):
 			args.warmup_steps = args.warmup_threshold // 5
@@ -223,21 +226,17 @@ def createSession(args, embedding):
 	# globalStep & loss already in
 	settingDict['colocateGradient'] = args.colocate
 	settingDict['clipGradient'] = args.gradient_clipping
-	trainingGradient = builder.configureGradientOptions(trainingTrainOp[0], settingDict)
-	inferGradient = builder.configureGradientOptions(trainingTrainOp[0], settingDict)
-	if(trainingTrainOp[1] is not None and inferTrainOp[1] is not None):
-		# incrementGlobalStep is available, group them up
-		trainingTrainOp = tf.group(trainingGradient, trainingTrainOp[1])
-		inferTrainOp = tf.group(inferGradient, inferTrainOp[1])
-	else:
-		trainingTrainOp = trainingGradient
-		inferTrainOp = inferGradient
+	trainingGradient = builder.configureGradientOptions(trainingTrainOp, settingDict)
+	inferGradient = builder.configureGradientOptions(inferTrainOp, settingDict)
+	# incrementGlobalStep always run after a trainingOp is called
+	trainingTrainOp = tf.group(trainingGradient, settingDict['incrementGlobalStep'])
+	inferTrainOp = tf.group(inferGradient, settingDict['incrementGlobalStep'])
 	# initiate the session
 	session.run(tf.global_variables_initializer())
 	
 	if(args.verbose):
 		for key in settingDict:
-			args.print_verbose("{}:{}".format(key, type(settingDict[key])))
+			args.print_verbose("{}:{}".format(key, type(settingDict[key]) if(not isinstance(settingDict[key], (int, str, bool, dict, list, tuple))) else settingDict[key]))
 	
 	inputOutputTuple = [input, output, decoderInput]
 	configTuple = [inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, outputIds]

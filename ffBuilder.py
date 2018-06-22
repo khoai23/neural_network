@@ -344,7 +344,6 @@ def createOptimizer(settingDict):
 		if('globalStep' in settingDict):
 			globalStep = settingDict['globalStep']
 			assert isinstance(globalStep, tf.Variable)
-			incrementGlobalStep = tf.assign_add(globalStep, 1)
 		if('warmupTraining' in settingDict and 'globalStep' in locals()):
 			warmupStep, warmupThreshold = settingDict['warmupTraining']
 			warmupFactor = tf.exp(-2 / warmupStep)
@@ -358,29 +357,26 @@ def createOptimizer(settingDict):
 			# decayFactor = warmupFactor**(tf.to_float(warmupStep - globalStep))
 			trainingRate = tf.cond(globalStep >= decayThreshold,
 									lambda: tf.train.exponential_decay(trainingRate,(globalStep - decayThreshold), decayStep, decayFactor, staircase=True),
-									lambda: trainingRate)	
+									lambda: trainingRate)
 		
-		trainingOp = tf.train.GradientDescentOptimizer(trainingRate)
-		if('globalStep' in locals()):
-			return trainingOp, incrementGlobalStep
-		else:
-			return trainingOp, None
+		return tf.train.GradientDescentOptimizer(trainingRate)
 	elif(mode == 'adam'):
 		if('trainingRate' not in settingDict):
-			return tf.train.AdamOptimizer(), None
+			return tf.train.AdamOptimizer()
 		else:
 			trainingRate = settingDict['trainingRate']
-			return tf.train.AdamOptimizer(trainingRate), None
+			return tf.train.AdamOptimizer(trainingRate)
 	else:
 		raise Exception("Optimizer not specified.")
 	
 def configureGradientOptions(optimizer, settingDict):
 	assert all(key in settingDict for key in ['colocateGradient', 'clipGradient', 'globalStep', 'loss'])
 	loss = settingDict['loss']
-	affectedParams = tf.trainable_variables()
 	colocateGradient = settingDict['colocateGradient']
 	# The gradient of all params affected 
-	gradients = tf.gradients(loss, affectedParams, colocate_gradients_with_ops=colocateGradient)
+	# affectedParams = tf.trainable_variables()
+	# gradients = tf.gradients(loss, affectedParams, colocate_gradients_with_ops=colocateGradient)
+	gradients, affectedParams = zip(*optimizer.compute_gradients(loss))
 	# The maximum value of gradient allowed
 	gradientClipValue = settingDict['clipGradient']
 	gradientClipValue, globalNorm = tf.clip_by_global_norm(gradients, gradientClipValue)
