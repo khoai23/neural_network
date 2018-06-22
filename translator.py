@@ -210,7 +210,7 @@ def createSession(args, embedding):
 	settingDict['mode'] = args.optimizer
 	settingDict['trainingRate'] = args.learning_rate
 	settingDict['globalStep'] = tf.Variable(0, trainable=False, dtype=tf.int32)
-	settingDict['incrementGlobalStep'] = tf.assign_add(globalStep, 1)
+	settingDict['incrementGlobalStep'] = tf.assign_add(settingDict['globalStep'], 1)
 	if(args.warmup_threshold > 0):
 		if(args.warmup_steps <= 0):
 			args.warmup_steps = args.warmup_threshold // 5
