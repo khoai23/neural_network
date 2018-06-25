@@ -45,7 +45,7 @@ def createSentenceCouplingFromFile(args):
 			coupling.append((srcSentences[i], tgtSentences[i]))
 	args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
 	# Sort by number of words in output sentences
-	coupling = sorted(coupling, key=lambda couple: (len(couple[1]), len(couple[1])))
+	coupling = sorted(coupling, key=lambda couple: (len(couple[1]), len(couple[0])))
 	if(args.dev_file_name):
 		# Try to get testing values
 		srcDev = args.src + args.dev_file_name if(args.prefix) else args.dev_file_name + '.' + args.src
@@ -393,9 +393,9 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	return batchedSentences
 	
 def padMatrix(matrix, paddingToken):
-	# find the longest line in the matrix
+	# find the longest line in the matrix, plus one for the longest
 	originalLength = [len(sentence) for sentence in matrix]
-	maxLen = max(originalLength)
+	maxLen = max(originalLength) + 1
 	# pad everything
 	for sentence in matrix:
 		if(len(sentence) < maxLen):
@@ -554,11 +554,6 @@ def calculateBleu(correct, result, trimData=None):
 		processedResult.append(' '.join(map(str, target)))
 	return BLEU(processedResult, [processedCorrect])
 	
-def checkNan(matrix):
-	isNan = np.isnan(matrix)
-	while(isinstance(isNan, (list, tuple))):
-		isNan = isNan.any()
-	return isNan
 	
 def stripResultArray(sentence, token):
 	# remove all token at the end of the sentence save one
