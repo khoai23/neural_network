@@ -395,7 +395,7 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 def padMatrix(matrix, paddingToken):
 	# find the longest line in the matrix, plus one for the longest
 	originalLength = [len(sentence) for sentence in matrix]
-	maxLen = max(originalLength) + 1
+	maxLen = max(originalLength)
 	# pad everything
 	for sentence in matrix:
 		if(len(sentence) < maxLen):
