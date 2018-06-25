@@ -274,6 +274,8 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			if(np.isnan(loss)):
 				print("Loss nan @ global_step {}, feed_dict {}".format(args.global_steps, feed_dict))
 				sys.exit(0)
+			else:
+				args.print_verbose("Loss %.4f @ global_step %d" % (loss, args.global_step))
 			avgLosses[-1] += loss
 			if(args.verbose and args.global_steps % 1000 == 0):
 				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
