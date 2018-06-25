@@ -411,12 +411,12 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 	target_weights = tf.sequence_mask(sequenceLengthList, maxUnrolling, dtype=tf.float32)
 	# May not be the most efficient opperation, but I digress
 	target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
-	# The top units will be extra weights, used for greedyEmbedding as their initial results are extremely important
+	# The top units will be extra weights, used for greedyEmbeddingHelper as their initial results are extremely important
 	if(extraWeightTowardTop):
 		unrollingMask = tf.range(4, 0, -4.0 / tf.to_float(maxUnrolling))
 		target_weights = tf.multiply(target_weights, unrollingMask)
 	# the loss function being the reduce mean of the entire batch
-	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="crossent")) / tf.to_float(batchSize)
+	loss = tf.reduce_sum(tf.multiply(tf.clip_by_value(crossent, 0.0, 1e7), target_weights, name="crossent")) / tf.to_float(batchSize)
 	return loss, target_weights
 	
 def createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=None):
