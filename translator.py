@@ -69,7 +69,7 @@ def createSentenceCouplingFromFile(args):
 def createEmbeddingCouplingFromFile(args):
 	srcDict = getEmbeddingFromFile(os.path.join(args.directory, args.src_dict_file), args.import_default_dict)
 	tgtDict = getEmbeddingFromFile(os.path.join(args.directory, args.tgt_dict_file), args.import_default_dict)
-	# TODO Print a warning here for normal dict, since it may change order each time it is used
+	# TODO Print a warning here for normal dict, since it may change order each time it is used. Then again, we are using OrderedDict and python3 stated that it preserve the sequence of words. So low priority.
 	# Convert the src/tgt dict into normal (word to id), ref (id to word), embeddingVector (id to vector)
 	counter = 0
 	srcWordToId, srcIdToWord = {}, {}
@@ -152,8 +152,8 @@ def createSession(args, embedding):
 		tgtNumWords = tgtEmbeddingVector.shape[0]
 		assert tgtNumWords == len(tgtEmbeddingDict)
 	
-	srcEmbeddingVector = tf.Variable(srcEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
-	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding)
+	srcEmbeddingVector = tf.Variable(srcEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding, name='input_embedding')
+	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding, name='output_mbedding')
 	
 	config = tf.ConfigProto()
 	config.gpu_options.allow_growth = True
@@ -166,28 +166,28 @@ def createSession(args, embedding):
 	
 	tf.get_variable_scope().set_initializer(initializer)
 	# dropout value, used for training. Must reset to 1.0(all) when infer
-	dropout = tf.placeholder_with_default(1.0, shape=())
+	dropout = tf.placeholder_with_default(1.0, shape=(), name='dropout')
 	# input in shape (batchSize, inputSize) - not using timemayor
-	input = tf.placeholder(shape=[None, None], dtype=tf.int32)
+	input = tf.placeholder(shape=[None, None], dtype=tf.int32, name='input')
 	# input are lookup from the known srcEmbeddingVector, shape (batchSize, inputSize, embeddingSize)
-	inputVector = tf.nn.embedding_lookup(srcEmbeddingVector, input)
+	inputVector = tf.nn.embedding_lookup(srcEmbeddingVector, input, name='input_vectors')
 	# craft the encoder depend on the input vector. Currently using default values for all version
 	settingDict = {'inputType':inputVector, 'layerSize':embeddingSize, 'inputSize':None, 'dropout':dropout}
 	inputFromEncoder, encoderOutput, encoderState, dropoutFromEncoder = builder.createEncoder(settingDict)
 	assert inputFromEncoder is inputVector and dropoutFromEncoder is dropout
 	# craft the output in shape (batchSize, outputSize)
-	output = tf.placeholder(shape=[None, None], dtype=tf.int32)
-	decoderInput = tf.placeholder(shape=[None, None], dtype=tf.int32)
+	output = tf.placeholder(shape=[None, None], dtype=tf.int32, name='output')
+	decoderInput = tf.placeholder(shape=[None, None], dtype=tf.int32, name='input_decoder')
 	# the inputLengthList is the length of the encoding sentence, necessary for attention to accurately select within the correct input sentence
-	inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32)
+	inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32, name='input_length')
 	# the outputLengthList is the length of the sentence supposed to be output. Used to create somewhat more accurate loss function
-	outputLengthList = tf.placeholder(shape=[None], dtype=tf.int32)
-	# These are the dimension of the batch
-	batchSize = tf.placeholder(shape=(), dtype=tf.int32)
-	maximumUnrolling = tf.placeholder_with_default(args.maximum_sentence_length, shape=())
+	outputLengthList = tf.placeholder(shape=[None], dtype=tf.int32, name='output_length')
+	# These are the dimension of the batch in decoder. Needed for retarded high-level decoder functions.
+	batchSize = tf.placeholder(shape=(), dtype=tf.int32, name='batch_size')
+	maximumUnrolling = tf.placeholder_with_default(args.maximum_sentence_length, shape=(), name='decoder_maximum_length')
 	# likewise, the output will be looked up into shape (batchSize, inputSize, embeddingSize)
 	# outputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, output)
-	decoderInputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, decoderInput)
+	decoderInputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, decoderInput, name='output_vectors')
 	# decoder will use the encoderState to work, outputVector and tgtEmbeddingVector for lookup check
 	# also need a mode placeholder for switching between decoder helper and the start/end tokenId to search for 
 	startTokenId, endTokenId = tgtEmbeddingDict[args.start_token], tgtEmbeddingDict[args.end_token]
@@ -199,7 +199,8 @@ def createSession(args, embedding):
 	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['decoderOutputSize'] = tgtNumWords
 	settingDict['batchSize'] = batchSize; settingDict['maximumDecoderLength'] = maximumUnrolling; settingDict['decoderInput'] = decoderInputVector
 	if(args.attention):
-		inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32)
+		# Duplicate spotted
+		# inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32, name='')
 		settingDict['attention'] = args.attention
 		settingDict['encoderOutput'] = encoderOutput
 		settingDict['encoderLengthList'] = inputLengthList
@@ -209,7 +210,7 @@ def createSession(args, embedding):
 	# TrainingOp function, built on the loss function
 	settingDict['mode'] = args.optimizer
 	settingDict['trainingRate'] = args.learning_rate
-	settingDict['globalStep'] = tf.Variable(0, trainable=False, dtype=tf.int32)
+	settingDict['globalStep'] = tf.Variable(0, trainable=False, dtype=tf.int32, name='global_steps')
 	settingDict['incrementGlobalStep'] = tf.assign_add(settingDict['globalStep'], 1)
 	if(args.warmup_threshold > 0):
 		if(args.warmup_steps <= 0):
@@ -273,6 +274,7 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			loss, _ = session.run(trainTuple[0 if useTrainingHelper else 1], feed_dict=feed_dict)
 			if(np.isnan(loss)):
 				print("Loss nan @ global_step {}, feed_dict {}".format(args.global_steps, feed_dict))
+				findNanSession(args, session)
 				sys.exit(0)
 			#else:
 			#	args.print_verbose("Loss %.4f @ global_step %d" % (loss, args.global_steps))
@@ -280,13 +282,15 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			if(args.verbose and args.global_steps % 1000 == 0):
 				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
 		avgLosses[-1] = avgLosses[-1] / len(batches)
+		if((args.global_steps+1) % args.debug_steps == 0):
+			debugSession(args, session)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
 			# run evaluationFunction every evaluation_step epoch
 			useTrainingHelper = evaluationFunction((step+1,avgLosses))
 		avgLosses.append(0)
 	return avgLosses
 	
-def evaluateSession(args, session, dictTuple, sampleBatch):
+def evaluateSession(args, sessionTuple, dictTuple, sampleBatch):
 	session, inputOutputTuple, configTuple, _ = sessionTuple
 	input, output, decoderInput = inputOutputTuple
 	inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, outputIds = configTuple
@@ -311,6 +315,47 @@ def inferenceSession(args, session, data):
 		output.append(decodeOutput)
 	return output
 	
+def findNanSession(args, session):
+	# Search for all variable within the session
+	varList = tf.trainable_variables()
+	for tensor in varList:
+		tensorValue = tensor.eval(session=session)
+		# use dimSize to determine if int or ndarray, flatten if ndarray
+		if(not isinstance(tensorValue, (np.ndarray, list))):
+			if(not np.isfinite(tensorValue)):
+				printNan(args, tensor.name)
+		else:
+			if(not all(np.isfinite(val) for val in tensorValue.flatten())):
+				printNan(args, tensor.name)
+
+def printNan(args, tensorName):
+	print("Tensor %s had nan in its values" % tensorName)
+
+def debugSession(args, session):
+	# Get all independent variables in the sessions
+	varList = tf.trainable_variables()
+	# Maximum and minimum values, generate abitrary number to be overwritten
+	maxVal, minVal, maxValTensor, minValTensor = -1e20, 1e20, None, None
+	# Values taken from the session
+	tensorValues = session.run(varList)
+	for tensor, values in zip(varList, tensorValues):
+		name = tensor.name
+		if(isinstance(values, np.ndarray)):
+			# flatten
+			values = values.flatten()
+		else:
+			# create single length values
+			values = np.array([values])
+		# iterate, record
+		for v in values:
+			if(values > maxVal):
+				maxVal, maxValTensor = v, name
+			elif(values < minVal):
+				minVal, minValTensor = v, name
+	args.print_verbose("Maximum @%s:%.2f; Minimum @%s:%.2f." % (maxValTensor, maxVal, minValTensor, minVal))
+	# Return the values
+	return (maxVal, maxValTensor), (minVal, minValTensor)
+
 def generateBatchesFromSentences(args, data, embeddingTuple, singleBatch=False):
 	srcDictTuple, tgtDictTuple = embeddingTuple
 	srcWordToId, tgtWordToId = srcDictTuple[0], tgtDictTuple[0]
@@ -341,6 +386,21 @@ def generateBatchesFromSentences(args, data, embeddingTuple, singleBatch=False):
 	# Return the processed value
 	return batches
 	
+def checkBatchValidity(args, batch, embeddingTuple):
+	# Check if all input/output values in batch is in the boundary of dictTuple 
+	srcEmbeddingTuple, tgtEmbeddingTuple = embeddingTuple
+	srcIdToWord, tgtIdToWord = srcEmbeddingTuple[1], tgtEmbeddingTuple[1]
+	srcSize, tgtSize = len(srcIdToWord), len(tgtIdToWord)
+	args.print_verbose("Found srcSize: %d, tgtSize: %d" % (srcSize, tgtSize))
+	# check on 0-1-4: input-output-tgtInput
+	input, output, _, _, tgtInput = batch
+	if(any(idx >= srcSize for idx in np.array(input).flatten())):
+		raise Exception("Caught invalid index @input, full input {} while maximumIdx {}".format(input, srcSize))
+	if(any(idx >= tgtSize for idx in np.array(output).flatten())):
+                raise Exception("Caught invalid index @output, full output {} while maximumIdx {}".format(output, tgtSize))
+	if(any(idx >= tgtSize for idx in np.array(tgtInput).flatten())):
+                raise Exception("Caught invalid index @tgtInput, fullInput {} while maximumIdx {}".format(tgtInput, tgtSize))
+
 def generateRandomBatchesFromSet(args, batches, paddingToken):
 	raise Exception("Unfixed @generateRandomBatchesFromSet")
 	# if batch too small, use first available
@@ -395,7 +455,8 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	return batchedSentences
 	
 def padMatrix(matrix, paddingToken):
-	# find the longest line in the matrix, plus one for the longest
+	# find the longest line in the matrix
+	# TODO plus one for the longest if not crossing abitrary maxLength
 	originalLength = [len(sentence) for sentence in matrix]
 	maxLen = max(originalLength)
 	# pad everything
@@ -659,6 +720,10 @@ if __name__ == "__main__":
 	parser.add_argument('--decay_factor', type=float, default=0.5, help='The factor to multiply at each decay_steps. Default 0.5')
 	parser.add_argument('--gradient_clipping', type=float, default=5.0, help='The maximum value for gradient. Default 5.0')
 
+	# DEBUG
+	parser.add_argument('--debug', action='store_true', help='When activated, run debugSession function every debug_steps during training.')
+	parser.add_argument('--debug_steps', type=int, default=1, help='The step to run debug function. Default to every step (1).')
+
 	args = parser.parse_args()
 	if(args.load_params or args.save_params):
 		tryLoadOrSaveParams(args, ['mode', 'directory'])
@@ -740,7 +805,10 @@ if __name__ == "__main__":
 					sample = generateRandomBatchesFromSet(args, batches, (embeddingTuple[0][0][args.end_token], embeddingTuple[1][0][args.end_token], embeddingTuple[1][0][args.start_token]))
 			#except Exception:
 			#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
-		print("Batches generated/loaded, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
+		# Check batch for screwup in idx values
+		for batch in batches:
+			checkBatchValidity(args, batch, embeddingTuple)	
+		print("Batches generated/loaded with no error, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
 		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
 		
 		# create random idx to print a sample consistently during evaluation

@@ -155,7 +155,7 @@ def createCustomizedSession(settingDict):
 		return sess, train_op, prediction, training_inputs, training_outputs
 
 def createEncoder(settingDict):
-	prefix = settingDict.get('prefix', 'RNN')
+	prefix = settingDict.get('prefix', 'Encoder')
 	cellType = settingDict.get('cellType', 'lstm')
 	forgetBias = settingDict.get('forgetBias', 1.0)
 	dropout = settingDict.get('dropout', 1.0)
@@ -171,22 +171,22 @@ def createEncoder(settingDict):
 	cellType = tf.contrib.rnn.BasicLSTMCell
 	# Dropout variable here
 	if(isinstance(dropout, int)):
-		dropout = tf.placeholder_with_default(dropout, shape=(), name=prefix+'dropout')
+		dropout = tf.placeholder_with_default(dropout, shape=(), name='dropout')
 	elif(not isinstance(dropout, tf.Tensor)):
 		raise Exception('Dropout in wrong type, not tf.Tensor|tf.Operation|number')
 	# Input variation here
 	if(isinstance(inputType, (tf.Operation, tf.Tensor))):
 		inputs = inputType
 	else:
-		inputs = tf.placeholder(shape=[None, inputSize], dtype=tf.float32, name=prefix+'input')
+		inputs = tf.placeholder(shape=[None, inputSize], dtype=tf.float32, name=prefix+'_input')
 	# Encoder construction here
 	if(bidirectional):
 		if(layerDepth % 2 != 0):
 			raise Exception("Bidirectional network must have an even number of layers")
 		layerDepth = layerDepth / 2
 		
-		forwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout)
-		backwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout)
+		forwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_forward')
+		backwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_backward')
 		
 		outputs, state = tf.nn.bidirectional_dynamic_rnn(forwardLayers, backwardLayers, inputs, dtype=tf.float32)
 		outputs = tf.concat(outputs, -1)
@@ -198,14 +198,14 @@ def createEncoder(settingDict):
 				allState.extend([state[0][i], state[1][i]])
 			state = tuple(allState)
 	else:
-		layers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout)
+		layers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 		
 		outputs, state = tf.nn.dynamic_rnn(layers, inputs, dtype=tf.float32)
 		
 	return inputs, outputs, state, dropout
 	
 def createDecoder(settingDict):
-	prefix = settingDict.get('prefix', 'encoder')
+	prefix = settingDict.get('prefix', 'decoder')
 	isBareMode = settingDict.get('mode', True)
 	# the batchSize/maximumDecoderLength must be a placeholder that is filled during inference
 	batchSize = settingDict['batchSize']; maximumDecoderLength = settingDict['maximumDecoderLength']; outputEmbedding = settingDict['outputEmbedding']
@@ -234,9 +234,9 @@ def createDecoder(settingDict):
 	# Dropout must be a placeholder/operation by now, as encoder will convert it
 	assert isinstance(dropout, (tf.Operation, tf.Tensor)) and isinstance(correctResult, (tf.Operation, tf.Tensor))
 	# Decoder construction here
-	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout)
+	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 	if(attentionMechanism is not None):
-		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize,)
+		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, name=prefix + '_attention_wrapper')
 	# conversion layer to convert from the hiddenLayers size into vector size if they have a mismatch
 	# Helper for training using the output taken from the encoder outside
 	trainHelper = tf.contrib.seq2seq.TrainingHelper(decoderTrainingInput, tf.fill([batchSize], maximumDecoderLength))
@@ -249,7 +249,7 @@ def createDecoder(settingDict):
 		# Helper using the argmax output as input
 		inferHelper = tf.contrib.seq2seq.GreedyEmbeddingHelper(outputEmbedding, startToken, endToken)
 	# Projection layer
-	projectionLayer = tf.layers.Dense(decoderOutputSize)
+	projectionLayer = tf.layers.Dense(decoderOutputSize, name=prefix+'_projection')
 	# create the initial state out of a clone
 	initialState = decoderCells.zero_state(dtype=tf.float32, batch_size=batchSize).clone(cell_state=encoderState)
 	# depending on the mode being training or infer, use either Helper as fit
@@ -263,7 +263,7 @@ def createDecoder(settingDict):
 	'''if(decoderOutputSize != layerSize):
 		trainLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=None)
 		inferLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=True)'''
-	# sample_id is the argmax of the output. It can be used during 
+	# sample_id is the argmax of the output. It can be used during beam searches and training
 	sample_id = trainOutput.sample_id
 	# correctResult in bareMode are [batchSize, maximumDecoderLength, vectorSize] represent correct value expected.
 	# correctResult in bareMode are [batchSize, maximumDecoderLength] represent correct ids expected.
@@ -339,7 +339,7 @@ def createOptimizer(settingDict):
 		# optimizer = 
 		trainingRate = settingDict['trainingRate']
 		if(isinstance(trainingRate, float)):
-			trainingRate = tf.constant(trainingRate, dtype=tf.float32)
+			trainingRate = tf.constant(trainingRate, dtype=tf.float32, name='training_rate_default')
 		# warmUp and decay scheme. Customize later
 		if('globalStep' in settingDict):
 			globalStep = settingDict['globalStep']
@@ -416,13 +416,13 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 		unrollingMask = tf.range(4, 0, -4.0 / tf.to_float(maxUnrolling))
 		target_weights = tf.multiply(target_weights, unrollingMask)
 	# the loss function being the reduce mean of the entire batch
-	loss = tf.reduce_sum(tf.multiply(tf.clip_by_value(crossent, 0.0, 1e7), target_weights, name="crossent")) / tf.to_float(batchSize)
+	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="crossent")) / tf.to_float(batchSize)
 	return loss, target_weights
 	
-def createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=None):
+def createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=None, name='RNN'):
 	layers = []
 	for i in range(layerDepth):
-		cell = cellType(layerSize, forget_bias=forgetBias)
+		cell = cellType(layerSize, forget_bias=forgetBias, name=name)
 		if(dropout is not None):
 			cell = tf.contrib.rnn.DropoutWrapper(cell=cell, input_keep_prob=dropout)
 		layers.append(cell)
