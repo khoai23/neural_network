@@ -281,9 +281,9 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			avgLosses[-1] += loss
 			if(args.verbose and args.global_steps % 1000 == 0):
 				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
+			if((args.global_steps+1) % args.debug_steps == 0):
+				debugSession(args, session)
 		avgLosses[-1] = avgLosses[-1] / len(batches)
-		if((args.global_steps+1) % args.debug_steps == 0):
-			debugSession(args, session)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
 			# run evaluationFunction every evaluation_step epoch
 			useTrainingHelper = evaluationFunction((step+1,avgLosses))
