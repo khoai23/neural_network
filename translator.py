@@ -346,13 +346,13 @@ def debugSession(args, session):
 		else:
 			# create single length values
 			values = np.array([values])
-		args.print_verbose("Tensor %s, value shape %s" % (name, values.shape))
+		args.print_verbose("Tensor %s, shape when flattened %s" % (name, values.shape))
 		assert len(values.shape) == 1
 		# iterate, record
 		for v in values:
-			if(values > maxVal):
+			if(v > maxVal):
 				maxVal, maxValTensor = v, name
-			elif(values < minVal):
+			elif(v < minVal):
 				minVal, minValTensor = v, name
 	args.print_verbose("Maximum @%s:%.2f; Minimum @%s:%.2f." % (maxValTensor, maxVal, minValTensor, minVal))
 	# Return the values
@@ -393,7 +393,7 @@ def checkBatchValidity(args, batch, embeddingTuple):
 	srcEmbeddingTuple, tgtEmbeddingTuple = embeddingTuple
 	srcIdToWord, tgtIdToWord = srcEmbeddingTuple[1], tgtEmbeddingTuple[1]
 	srcSize, tgtSize = len(srcIdToWord), len(tgtIdToWord)
-	args.print_verbose("Found srcSize: %d, tgtSize: %d" % (srcSize, tgtSize))
+	# args.print_verbose("Found srcSize: %d, tgtSize: %d" % (srcSize, tgtSize))
 	# check on 0-1-4: input-output-tgtInput
 	input, output, _, _, tgtInput = batch
 	if(any(idx >= srcSize for idx in np.array(input).flatten())):
