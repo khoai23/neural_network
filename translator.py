@@ -333,12 +333,12 @@ def printNan(args, tensorName):
 
 def debugSession(args, session):
 	# Get all independent variables in the sessions
-	varList = tf.trainable_variables()
+	tensorList = tf.trainable_variables()
 	# Maximum and minimum values, generate abitrary number to be overwritten
 	maxVal, minVal, maxValTensor, minValTensor = -1e20, 1e20, None, None
 	# Values taken from the session
-	tensorValues = session.run(varList)
-	for tensor, values in zip(varList, tensorValues):
+	tensorValues = session.run(tensorList)
+	for tensor, values in zip(tensorList, tensorValues):
 		name = tensor.name
 		if(isinstance(values, np.ndarray)):
 			# flatten
@@ -346,6 +346,8 @@ def debugSession(args, session):
 		else:
 			# create single length values
 			values = np.array([values])
+		args.print_verbose("Tensor %s, value shape %s" % (name, values.shape))
+		assert len(values.shape) == 1
 		# iterate, record
 		for v in values:
 			if(values > maxVal):
