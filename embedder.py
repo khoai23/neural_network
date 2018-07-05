@@ -3,7 +3,7 @@ import sys, re, argparse, io, time, pickle
 from ffBuilder import *
 from exampleBuilder import *
 import numpy as np
-from collection import OrderedDict
+from collections import OrderedDict
 
 conllRegex = re.compile("(\d+)\t(.+)\t_\t([\w$\.,:\"\'-]+)\t([\w$\.,:\"\'-]+)\t_\t(\d+)\t(\w+)")
 WORD_WINDOW = 2
@@ -154,6 +154,9 @@ def generateDictionaryFromLines(lines, lowercase=False):
 	
 def organizeDict(wordCountDict, tagDict, dictSize, unknownWord="*UNKNOWN*"):
 	# Dict will be sorted from highest to lowest appearance
+	if(dictSize == -2):
+		# Obscure mode, remove all items that only show up once
+		wordCountDict = {k: v for k, v in wordCountDict.items() if v <= 1}
 	listWords = [w for w,c in sorted(wordCountDict.items(), key=lambda item: item[1], reverse=True)]
 	listWords = listWords[:dictSize-1] if(dictSize > 0) else listWords
 	if(isinstance(unknownWord, str)):
@@ -464,7 +467,7 @@ if __name__ == "__main__":
 	parser.add_argument('--epoch', type=int, default=1000, help='number of iterations through the data, default 1000')
 	parser.add_argument('--batch_size', type=int, default=512, help='size of the batches to be feed into the network, default 512')
 	parser.add_argument('--embedding_size', type=int, default=100, help='size of the embedding to be created, default 100')
-	parser.add_argument('--dict_size', type=int, default=10000, help='size of the words to be embedded, default 10000, input -1 for all words')
+	parser.add_argument('--dict_size', type=int, default=10000, help='size of the words to be embedded, default 10000, input -1 for all words, -2 for all words that show up more than once.')
 	parser.add_argument('-e','--evaluate', type=int, default=0, help='try to evaluate the validity of the trained embedding. -1 for not evaluating, 0 for evaluating at the end of the training, and positive number for the steps where you launch the evaluation')
 	parser.add_argument('--filter_tag', action='store_true', help='remove the trained tag from the output file')
 	parser.add_argument('--grandparent', action='store_true', help='use grandparent scheme, only available to dependency_cbow mode')
