@@ -28,8 +28,8 @@ def createDualModel(wordVectorSize, loadPreviousModel=None, hidden_layers=[300],
 	
 	# Initialize graph connections
 	session = tf.Session()
-	session, pac_train_op, pac_prediction, pac_input, pac_output = createTensorflowSession(pacModelSize, 1, 'PAC_', 0.5, hidden_layers, session)
-	session, sib_train_op, sib_prediction, sib_input, sib_output = createTensorflowSession(sibModelSize, 1, 'SIB_', 0.5, hidden_layers, session)
+	session, pac_train_op, pac_prediction, pac_input, pac_output = createTensorflowSession(pacModelSize, 1, 'PAC', 0.5, hidden_layers, session)
+	session, sib_train_op, sib_prediction, sib_input, sib_output = createTensorflowSession(sibModelSize, 1, 'SIB', 0.5, hidden_layers, session)
 	session.run(tf.global_variables_initializer())
 	
 	if(isinstance(loadPreviousModel, str)):
@@ -829,9 +829,9 @@ def getRulesFromFile(fileDir, acceptThreshold=-1):
 			continue
 	return (rulePAC, ruleSIB)
 
-PACKey = "{} {} {}"
-SIBKey = "{} {} {} {}"
-def checkRulesWithRuleDict(ruleDict, thresholdTuple, relation):
+# PACKey = "{} {} {}"
+# SIBKey = "{} {} {} {}"
+def checkRulesWithRuleDict(ruleDict, thresholdTuple, relation, formatterTuple):
 	# Return true/false 
 	# Create key from relation
 	type = relation[0]
@@ -839,8 +839,11 @@ def checkRulesWithRuleDict(ruleDict, thresholdTuple, relation):
 	if(type == "PAC"):
 		ruleDict = ruleDict[0]
 		threshold = thresholdTuple[0]
-		type, parent, child = relation
-		key = PACKey.format(parent.tag, child.dependency, getDistance(child))
+		_, parent, child = relation
+		PACKey, PACFormatter = formatterTuple[0]
+		# key = PACKey.format(parent.tag, child.dependency, getDistance(child))
+		key = PACFormatter(PACKey, parent, child)
+		# print(key)
 		if(key not in ruleDict or ruleDict[key] < threshold):
 			return False
 		# print("Found PAC rule {} acceptable, {} >= {}".format(key, ruleDict[key], threshold))
@@ -848,10 +851,12 @@ def checkRulesWithRuleDict(ruleDict, thresholdTuple, relation):
 	else:
 		ruleDict = ruleDict[1]
 		threshold = thresholdTuple[1]
-		type, one, other, parent = relation
+		_, one, other, parent = relation
 		if(one.pos > other.pos):
 			one, other = other, one
-		key = SIBKey.format(parent.tag, one.dependency, other.dependency, isNextToEachOther(one, other, parent))
+		SIBKey, SIBFormatter = formatterTuple[1]
+		# key = SIBKey.format(parent.tag, one.dependency, other.dependency, isNextToEachOther(one, other, parent))
+		key = SIBFormatter(SIBKey, one, other, parent)
 		if(key not in ruleDict or ruleDict[key] < threshold or getPunctuationInBetween(one, parent, other) == 1):
 			return False
 		# print("Found SIB rule {} acceptable, {} >= {}".format(key, ruleDict[key], threshold))
@@ -1221,6 +1226,7 @@ if __name__ == "__main__":
 			defaultTuple = ([defaultTuple[0]],[defaultTuple[1]],defaultTuple[2])
 			for key in combinedTagDict:
 				combinedTagDict[key] = [combinedTagDict[key]]
+		formatterTuple = (createFormatPAC(' '), createFormatSIB(' '))
 		def getAllConnection(node, siblings):
 			if(node.isPunctuation()):
 				return
@@ -1228,7 +1234,7 @@ if __name__ == "__main__":
 			for other in siblings:
 				if(other is node or other.isPunctuation() or other.pos < node.pos):
 					continue
-				if(ruleDict and not checkRulesWithRuleDict(ruleDict, args.model_percentage, ('SIB', node, other, node.parent))):
+				if(ruleDict and not checkRulesWithRuleDict(ruleDict, args.model_percentage, ('SIB', node, other, node.parent), formatterTuple)):
 					continue
 				if(args.mode == 'reorder'):
 					sibData[0].append(nodeRelationToVector('SIB', (node, other, node.parent), (combinedTagDict, vectorDict), defaultTuple))
@@ -1239,7 +1245,7 @@ if __name__ == "__main__":
 			for child in node.children:
 				if(child.isPunctuation()):
 					continue
-				if(ruleDict and not checkRulesWithRuleDict(ruleDict, args.model_percentage, ('PAC', node, child))):
+				if(ruleDict and not checkRulesWithRuleDict(ruleDict, args.model_percentage, ('PAC', node, child), formatterTuple)):
 					continue
 				if(args.mode == 'reorder'):
 					pacData[0].append(nodeRelationToVector('PAC', (node, child), (combinedTagDict, vectorDict), defaultTuple))

@@ -68,12 +68,12 @@ def createEmbeddingCouplingFromFile(args):
 	return (srcWordToId, srcIdToWord, np.array(srcEmbeddingVector)), (tgtWordToId, tgtIdToWord, np.array(tgtEmbeddingVector))
 
 def createSession(args, embedding):
-	isTrainingMode = args.mode == "train"
 	srcEmbedding, tgtEmbedding = embedding
 	srcEmbeddingDict, _, srcEmbeddingVector = srcEmbedding
 	tgtEmbeddingDict, _, tgtEmbeddingVector = tgtEmbedding
 	srcEmbeddingSize = srcEmbeddingVector.shape[1]
 	tgtEmbeddingSize = tgtEmbeddingVector.shape[1]
+	tgtNumWords = tgtEmbeddingVector.shape[0]
 	
 	session = tf.Session()
 	# dropout value, used for training. Must reset to 1.0(all) when using the decoding
@@ -81,7 +81,7 @@ def createSession(args, embedding):
 	# input in shape (batchSize, inputSize) - not using timemayor
 	input = tf.placeholder(shape=[None, None], dtype=tf.int32)
 	# input are lookup from the known srcEmbeddingVector, shape (batchSize, inputSize, embeddingSize)
-	srcEmbeddingVector = tf.constant(srcEmbeddingVector)#, dtype=tf.float32)
+	srcEmbeddingVector = tf.Variable(srcEmbeddingVector, dtype=tf.float32)
 	inputVector = tf.nn.embedding_lookup(srcEmbeddingVector, input)
 	# craft the encoder depend on the input vector. Currently using default values for all version
 	settingDict = {'inputType':inputVector, 'layerSize':tgtEmbeddingSize, 'inputSize':None, 'dropout':dropout}
@@ -96,29 +96,28 @@ def createSession(args, embedding):
 	batchSize = tf.placeholder(shape=(), dtype=tf.int32)
 	maximumUnrolling = tf.placeholder_with_default(args.maximum_sentence_length, shape=())
 	# likewise, the output will be looked up into shape (batchSize, inputSize, embeddingSize)
-	tgtEmbeddingVector = tf.constant(tgtEmbeddingVector)#, dtype=tf.float32)
-	outputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, output)
+	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32)
+	# outputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, output)
 	decoderInputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, decoderInput)
 	# decoder will use the encoderState to work, outputVector and tgtEmbeddingVector for lookup check
 	# also need a mode placeholder for switching between decoder helper and the start/end tokenId to search for 
 	startTokenId, endTokenId = tgtEmbeddingDict['<s>'], tgtEmbeddingDict[args.end_token]
 	# mode = tf.placeholder_with_default(True, shape=())
 	# construct the settingDict
+	settingDict['mode'] = False
 	settingDict['startTokenId'] = startTokenId; settingDict['endTokenId'] = endTokenId
-	settingDict['correctResult'] = outputVector; settingDict['outputEmbedding'] = tgtEmbeddingVector
-	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['encoderOutputSize'] = tgtEmbeddingSize
+	settingDict['correctResult'] = output; settingDict['outputEmbedding'] = tgtEmbeddingVector; settingDict['layerSize'] = tgtEmbeddingSize
+	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['decoderOutputSize'] = tgtNumWords
 	settingDict['batchSize'] = batchSize; settingDict['maximumDecoderLength'] = maximumUnrolling; settingDict['decoderInput'] = decoderInputVector
-	logits, loss, decoderState, crossent = builder.createDecoder(isTrainingMode, settingDict)
+	logits, loss, decoderState, outputIds, crossent = builder.createDecoder(settingDict)
 	# TrainingOp function, built on the loss function
-	if(isTrainingMode):
-	#trainingTrainOp = builder.createOptimizer({'loss':loss[0], 'mode':'adam'})
-		trainOp = builder.createOptimizer({'loss':loss, 'mode':'sgd', 'trainingRate':1.0})
-	else:
-		trainOp = None
+	
+	trainingTrainOp = builder.createOptimizer({'loss':loss[0], 'mode':'adam', 'trainingRate':0.002})
+	inferTrainOp = builder.createOptimizer({'loss':loss[1], 'mode':'sgd', 'trainingRate':1.0})
 	# initiate the session
 	session.run(tf.global_variables_initializer())
 	
-	return session, [input, output, decoderInput], [batchSize, outputLengthList, maximumUnrolling, logits], [loss, trainOp]
+	return session, [input, output, decoderInput], [batchSize, outputLengthList, maximumUnrolling, logits, outputIds], [[loss[0], trainingTrainOp], [loss[1], inferTrainOp]]
 	
 def trainSessionOneBatch(args, sessionTuple, batch):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
@@ -128,19 +127,19 @@ def trainSessionOneBatch(args, sessionTuple, batch):
 	# batch is formatted sets which had been padded into 2d (batchSize, maximumUnrolling) for both input/output
 	# should be formattted as follow
 	feed_dict = {input:batch[0], output:batch[1], batchSize:batch[2], outputLengthList:batch[3], maximumUnrolling:max(batch[3]), decoderInput:batch[4]}
-	loss, _ = session.run(trainTuple, feed_dict=feed_dict)
+	loss, _ = session.run(trainTuple[0], feed_dict=feed_dict)
 	return loss
 	
 def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, _ = configTuple
+	batchSize, outputLengthList, maximumUnrolling, _, _ = configTuple
 	for step in range(args.epoch):
 		args.global_steps += 1
 		avgLosses = [0]
 		for batch in batches:
 			feed_dict = {input:batch[0], output:batch[1], batchSize:batch[2], outputLengthList:batch[3], maximumUnrolling:max(batch[3]), decoderInput:batch[4]}
-			loss, _ = session.run(trainTuple, feed_dict=feed_dict)
+			loss, _ = session.run(trainTuple[0], feed_dict=feed_dict)
 			avgLosses[-1] += loss
 		avgLosses[-1] = avgLosses[-1] / len(batches)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
@@ -152,14 +151,10 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 def evaluateSession(args, session, dictTuple, sampleBatch):
 	session, inputOutputTuple, configTuple, _ = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits = configTuple
+	batchSize, outputLengthList, maximumUnrolling, _, outputIds = configTuple
 	_, _, tgtEmbeddingVector = dictTuple[1]
 	feed_dict = {input:sampleBatch[0], batchSize:sampleBatch[2], outputLengthList:sampleBatch[3], maximumUnrolling:max(sampleBatch[3]), decoderInput:sampleBatch[4]}
-	sampleResult = session.run(logits, feed_dict=feed_dict)
-	_, savedData = getWordIdFromVectors(sampleResult[0], tgtEmbeddingVector, True)
-	#print(resultInfer, resultTrain)
-	# resultInfer = [getWordIdFromVectors(result, tgtEmbeddingVector, True, savedData) for result in resultInfer]
-	sampleResult = [getWordIdFromVectors(result, tgtEmbeddingVector, True, savedData) for result in sampleResult]
+	sampleResult = session.run(outputIds, feed_dict=feed_dict)
 	return sampleResult
 
 def generateBatchesFromSentences(args, data, dictTuple):
@@ -290,7 +285,7 @@ def sessionTupleToList(sessionTuple):
 	# Organize tensor/ops into list
 	_, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits = configTuple
+	batchSize, outputLengthList, maximumUnrolling, logits, outputIds = configTuple
 	loss, trainingOp = trainTuple
 	return [trainingOp], [input, output, batchSize, outputLengthList, maximumUnrolling, logits[0], logits[1], loss]
 def listToSessionTuple(opsAndTensor, session=None):
@@ -303,7 +298,7 @@ def listToSessionTuple(opsAndTensor, session=None):
 def testRun(args, sessionTuple, dictTuple):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits = configTuple
+	batchSize, outputLengthList, maximumUnrolling, logits, outputIds = configTuple
 	
 	# Try feeding dummy data
 	dummyInput = [[2, 6, 7, 9, 0], [4, 1, 1, 0, 0]]
@@ -330,7 +325,7 @@ def testRun(args, sessionTuple, dictTuple):
 def testSavingSession(args, sessionTuple):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits = configTuple
+	batchSize, outputLengthList, maximumUnrolling, logits, outputIds = configTuple
 	# assume session is constructed, run a dummy set
 	dummyInput = [[2, 4, 5, 0], [6, 7, 2, 0]]
 	dummyOutput = [[2, 4, 5, 0], [6, 7, 2, 0]]
@@ -389,13 +384,13 @@ if __name__ == "__main__":
 	args.end_token = '<\s>'
 	args.start_token = '<s>'
 	args.save = True
-	args.save_path = 'save\\dummy'
+	args.save_path = 'save\\initEmbedding'
 	args.epoch = 100
-	args.evaluation_step = 10
+	args.evaluation_step = 20
 	args.global_steps = 0
 	args.import_default_dict = True
 	args.maximum_sentence_length = 50
-	args.batch_size = 512
+	args.batch_size = 128
 	timer = time.time()
 	def getTimer():
 		return time.time()-timer
@@ -428,10 +423,12 @@ if __name__ == "__main__":
 			iteration, losses = extraArgs
 			trainResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
 			_, correctOutput, _, trimLength, trainInput = sample
-			print(trainInput[0], '\n=>', trainResult[0], '\n=', correctOutput[0])
-			print(trainInput[6], '\n=>', trainResult[6], '\n=', correctOutput[6])
+			print(trainInput[0], '\n=> TRAIN: ', trainResult[0][0], '\n=', correctOutput[0])
+			print(trainInput[0], '\n=> INFER: ', trainResult[1][0], '\n=', correctOutput[0])
+			print(trainInput[6], '\n=> TRAIN: ', trainResult[0][6], '\n=', correctOutput[6])
+			print(trainInput[6], '\n=> INFER: ', trainResult[1][6], '\n=', correctOutput[6])
 			# inferResult = calculateBleu(correctOutput, inferResult, trimLength)
-			trainResult = calculateBleu(correctOutput, trainResult, trimLength)
+			trainResult = calculateBleu(correctOutput, trainResult[0], trimLength)
 			print("Iteration %d, time passed %.2f, BLEU score %2.2f" % (iteration, getTimer(), trainResult * 100.0))
 			print("Losses during this cycle: {}".format(losses[-args.evaluation_step:]))
 			# The evaluation decide which model should we be improving

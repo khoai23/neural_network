@@ -29,10 +29,13 @@ def getRelationFromParentNode(parentNode, listRelation, lookupDict):
 		# relation will include dependency to parent, grandparent, parent, child, dependency to child, relating in that order
 		# will create relation in tuple of two, and require reversing after
 		relations = []
-		grandparent = parentNode.parent
-		if(grandparent is not None):
-			relations.append((lookupDict.get(tagChangeFunc(parentNode.dependency), 0), lookupDict.get(grandparent.word, 0)))
-			relations.append((lookupDict.get(grandparent.word,0), lookupDict.get(parentNode.word, 0)))
+		try:
+			grandparent = parentNode.parent
+			if(grandparent):
+				relations.append((lookupDict.get(tagChangeFunc(parentNode.dependency), 0), lookupDict.get(grandparent.word, 0)))
+				relations.append((lookupDict.get(grandparent.word,0), lookupDict.get(parentNode.word, 0)))
+		except AttributeError:
+			pass
 		relations.append((lookupDict.get(parentNode.word, 0), lookupDict.get(child.word, 0)))
 		relations.append((lookupDict.get(child.word, 0), lookupDict.get(tagChangeFunc(child.dependency), 0)))
 		# Finally append it into listRelation
@@ -49,7 +52,7 @@ def getCBOWRelationFromParentNode(parentNode, listRelation, lookupDict, useGrand
 								   lookupDict.get(child.dependency, defaultWordIdx), lookupDict.get(tagChangeFunc(child.word), defaultWordIdx)			], 
 								  lookupDict.get(parent.word, defaultWordIdx)) )
 		else:
-			listRelation.append( ([lookupDict.get(parentNode.word, defaultWordIdx), lookupDict.get(tagChangeFunc(parentNode.dependency, defaultWordIdx)),
+			listRelation.append( ([lookupDict.get(parentNode.word, defaultWordIdx), lookupDict.get(tagChangeFunc(parentNode.dependency), defaultWordIdx),
 								   lookupDict.get(child.dependency, defaultWordIdx), lookupDict.get(tagChangeFunc(child.tag), defaultWordIdx)			], 
 							lookupDict.get(child.word, defaultWordIdx)))
 	
@@ -66,7 +69,7 @@ def createFeedData(tree, lookupDict, cbow=(False, False)):
 	trueRoot = tree.children[0] if(tree.tag == 'ROOT' and len(tree.children) > 0) else tree
 	
 	recursiveRun(relationFunc, trueRoot)
-	
+	deleteTree(tree)
 	return allRelation
 	
 def createFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wordWindow=WORD_WINDOW):
@@ -220,18 +223,17 @@ def trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, saved
 			savedBatches = []
 			#return to head of the file, this time split in blocks and create appropriate tree
 			file.seek(0)
-			global blockIdx
-			blockIdx = 0
+			
 			dataBlock = getDataBlock(file.readlines(), blankLineRegex)
+			dataBlock.pop(0)
 			
 			# generator function for the getBatch process
 			def getFeedFromBlock():
-				global blockIdx
-				if(blockIdx >= len(dataBlock)):
+				if(len(dataBlock) <= 0):
 					return None
-				block = dataBlock[blockIdx]
+				block = dataBlock.pop()
 				tree = constructTreeFromBlock(block, conllRegex)
-				blockIdx += 1
+				del block
 				return createFeedData(tree, wordDict, (cbowMode, cbowGrandparent))
 			
 			# initialize
@@ -311,13 +313,17 @@ def trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, saved
 def evaluateSimilarity(divResult):
 	return 1 - np.tanh(np.abs(np.log(divResult)))
 
-def evaluateEmbedding(sessionTuple, refDict, sampleSize, sampleWordWindow, checkSize):
+def evaluateEmbedding(sessionTuple, combinedDict, sampleSize, sampleWordWindow, checkSize):
+	refDict = combinedDict[2]
 	# Taken straight from the basic word2vec
 	# use numpy instead of tf.matmul
 	session=sessionTuple[0]
 	
 	# sampleSize samples in range of 0-wordWindow, no duplication
-	random_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False)
+	# random_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False)
+	const_phr = ['gia_đình','ngành', 'triệu', 'điều']
+	random_sample = [combinedDict[1][phr] for phr in const_phr]
+	sampleSize = len(random_sample)
 	
 	# get the un-normalized version and check for closest values
 	_, _, _, _, resultTuple = sessionTuple
@@ -371,7 +377,7 @@ def exportEmbedding(exportMode, outputDir, outputExt, wordDict, resultMatrixTupl
 		file_default.close()
 		file_normalized.close()
 	elif(exportMode == "default" or exportMode == "normalized"):
-		use_dict = 0 if(exportMode == "default") else 1
+		useDict = 0 if(exportMode == "default") else 1
 		resultMatrix = resultMatrixTuple[useDict]
 		file = io.open(outputDir + '.' + outputExt, 'w', encoding = 'utf-8')
 		file.write(embeddingCountAndSize)
@@ -393,7 +399,7 @@ def exportEmbedding(exportMode, outputDir, outputExt, wordDict, resultMatrixTupl
 			normalDict[word] = resultMatrixTuple[0][idx]
 			if("full" in exportMode):
 				normalizedDict[word] = resultMatrixTuple[1][idx]
-		file = open(outputDir + '.' + outputExt, "wb" )
+		file = io.open(outputDir + '.' + outputExt, "wb")
 		pickle.dump(normalDict if exportMode == "binary" else (normalDict, normalizedDict), file)
 		file.close()
 	else:
@@ -410,6 +416,15 @@ def writeWordToFile(file, word, vector, dimensionFormat="%.6f"):
 		file.write(dimensionFormat % d)
 	file.write('\n')
 
+def writeListWordsToFile(fileOrFileDir, wordDict):
+	if(isinstance(fileOrFileDir, str)):
+		file = io.open(fileOrFileDir, 'w', encoding = 'utf-8')
+	else:
+		file = fileOrFileDir
+	for word in wordDict:
+		file.write(word + '\n')
+	file.close()
+	
 def modeStringToTuple(str):
 	# mode is basically (isNormal, isCBOW) tuple
 	str = str.split('_')
@@ -439,7 +454,7 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
 	parser.add_argument('-i','--inputdir', type=str, default=None, required=True, help='location of the input files')
 	parser.add_argument('-m', '--mode', type=modeStringToTuple, required=True, help='the mode to embed the word2vec in, must be in format (dependency|normal)_(skipgram|cbow)_wordWindow(only if in normal mode)')
-	parser.add_argument('-x', '--export_mode', required=True, type=str, help='exporting the values to an outside file, must be (all|both|default|normalized|binary|binary_full)')
+	parser.add_argument('-x', '--export_mode', required=True, type=str, help='exporting the values to an outside file, must be (all|both|default|normalized|binary|binary_full|vocab)')
 	parser.add_argument('-o','--outputdir', type=str, default=None, help='location of the output file')
 	parser.add_argument('-t','--tagdir', type=str, default="all_tag.txt", help='location of the tag file containing both POStag and dependency, default all_tag.txt')
 	parser.add_argument('--input_extension', type=str, default="conllx", help='file extension for input file, default conllx')
@@ -479,7 +494,12 @@ if __name__ == "__main__":
 	
 	file = io.open(args.inputdir + '.' + args.input_extension, 'r', encoding='utf-8')
 	tagDict = getTagFromFile(args.tagdir, True)
-	
+	# Exit prematurely with vocab export
+	if(args.export_mode == 'vocab'):
+		allWordDict = generateDictionaryFromLines(file.readlines(), args.lowercase)
+		writeListWordsToFile(args.outputdir + '.' + args.output_extension, allWordDict)
+		print("Done for vocab export, time passed %.2fs" % (time.time() - timer))
+		sys.exit(0)
 	# Initialize the embedding
 	sessionTuple, dictTuple = createEmbedding((file, isNormal, isCBOW, wordWindow, args.average, args.lowercase), tagDict, dictSize, embeddingSize, batchSize, \
 												unknownWord if(not isNormal) else [unknownWord, '<s>', '<\s>'])
@@ -496,7 +516,7 @@ if __name__ == "__main__":
 	def timerFunc(counter=None):
 		if(args.evaluate > 0 and counter is not None):
 			if(counter % args.evaluate == 0):
-				evaluateEmbedding(sessionTuple, dictTuple[2], sampleSize, sampleWordWindow, checkSize)
+				evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
 		return time.time() - timer
 		
 	savedTrainData = trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, 1, True)
@@ -506,7 +526,7 @@ if __name__ == "__main__":
 	
 	# Final evaluation
 	if(args.evaluate >= 0):
-		resultTuple = evaluateEmbedding(sessionTuple, dictTuple[2], sampleSize, sampleWordWindow, checkSize)
+		resultTuple = evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
 		print("Final @evaluateEmbedding, time passed %.2fs" % (time.time() - timer))
 	
 	dictSize = dictTuple[0]

@@ -105,7 +105,7 @@ def createSession(args, embedding):
 	# construct the settingDict
 	settingDict['startTokenId'] = startTokenId; settingDict['endTokenId'] = endTokenId
 	settingDict['correctResult'] = outputVector; settingDict['outputEmbedding'] = tgtEmbeddingVector
-	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['encoderOutputSize'] = tgtEmbeddingSize
+	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['decoderOutputSize'] = tgtEmbeddingSize
 	settingDict['batchSize'] = batchSize; settingDict['maximumDecoderLength'] = maximumUnrolling; settingDict['decoderInput'] = decoderInputVector
 	logits, loss, decoderState, crossent = builder.createDecoder(settingDict)
 	# TrainingOp function, built on the loss function

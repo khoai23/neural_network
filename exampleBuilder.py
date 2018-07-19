@@ -445,18 +445,31 @@ def createMinimalWordDictFromFile(filewordDir, refDict):
 		line = fileword.readline()
 	return wordDict
 	
+def createFormatPAC(separator):
+	formatPAC = separator.join(['%s' for i in range(5)])
+	def formatter(string, parent, child):
+		return string % (parent.tag, parent.dependency, child.tag, child.dependency, getDistance(child))
+	return formatPAC, formatter
+	
+def createFormatSIB(separator):
+	formatSIB = separator.join(['%s' for i in range(6)])
+	def formatter(string, child, other, parent):
+		return string % (parent.tag, child.tag, child.dependency, other.tag, other.dependency, isNextToEachOther(child, other, parent))
+	return formatSIB, formatter
+	
 def addAllTreeRelationToDict(tree, alignmentDict, fullRelationDict, separator="_"):
-	formatPAC = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
+	formatPAC, formatterPAC = createFormatPAC(separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
 	def tryAddingAllPAC(node):
 		for child in node.children:
-			key = formatPAC % (node.tag, child.dependency, getDistance(child))
+			# key = formatPAC % (node.tag, child.dependency, getDistance(child))
+			key =  "PAC" + separator + formatterPAC(formatPAC, node, child)
 			switch, total = fullRelationDict.get(key, (0, 0))
 			total += 1
 			if(node.pos in alignmentDict and child.pos in alignmentDict):
 				switch += 1 if ((node.pos - child.pos) * (alignmentDict[node.pos] - alignmentDict[child.pos]) < 0) else 0
 			fullRelationDict[key] = (switch, total)
 	
-	formatSIB = "SIB" + separator + "%s" + separator + "%s" + separator + "%s" + separator + "%s"
+	formatSIB, formatterSIB = createFormatSIB(separator) # = "SIB" + separator + "%s" + separator + "%s" + separator + "%s" + separator + "%s"
 	def tryAddingAllSIB(node):
 		listChildren = list(node.children)
 		while(len(listChildren) > 1):
@@ -466,7 +479,8 @@ def addAllTreeRelationToDict(tree, alignmentDict, fullRelationDict, separator="_
 					continue
 				elif(child.pos > other.pos):
 					child, other = other, child
-				key = formatSIB % (node.tag, child.dependency, other.dependency, isNextToEachOther(child, other, node))
+				# key = formatSIB % (node.tag, child.dependency, other.dependency, isNextToEachOther(child, other, node))
+				key = "SIB" + separator + formatterSIB(formatSIB, child, other, node)
 				switch, total = fullRelationDict.get(key, (0, 0))
 				total += 1
 				if(other.pos in alignmentDict and child.pos in alignmentDict):
@@ -798,7 +812,7 @@ if __name__ == "__main__":
 	parser.add_argument('-i','--inputdir', type=str, default=None, required=True, help='location of the input files')
 	parser.add_argument('-o','--outputdir', type=str, default=None, help='location of the output file')
 	parser.add_argument('-t','--tagdir', type=str, default="all_tag.txt", help='location of the tag file containing both POStag and dependency, default all_tag.txt')
-	parser.add_argument('-m','--mode', type=str, default="stanford", help='parser file mode (stanford|conll), default stanford')
+	parser.add_argument('-m','--mode', type=str, default="conll", help='parser file mode (stanford|conll), default conll')
 	parser.add_argument('-x','--output_extension', type=str, default="txt", help='output file mode (txt|arff|rule), default txt')
 	parser.add_argument('-e','--embedding_word', type=str, help='embedding word file')
 	parser.add_argument('--parser_extension', type=str, default="parser", help='file extension for parser, default parser')
