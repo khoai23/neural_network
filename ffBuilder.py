@@ -155,9 +155,9 @@ def createCustomizedSession(settingDict):
 		return sess, train_op, prediction, training_inputs, training_outputs
 
 def createEncoder(settingDict):
-	prefix = settingDict.get('prefix', 'Encoder')
+	prefix = settingDict.get('prefix', 'encoder')
 	cellType = settingDict.get('cellType', 'lstm')
-	forgetBias = settingDict.get('forgetBias', 1.0)
+	forgetBias = settingDict.get('forgetBias', 0.5)
 	dropout = settingDict.get('dropout', 1.0)
 	layerSize = settingDict.get('layerSize', 32)
 	layerDepth = settingDict.get('layerDepth', 2)
@@ -170,8 +170,8 @@ def createEncoder(settingDict):
 	# CellType selection here
 	cellType = tf.contrib.rnn.BasicLSTMCell
 	# Dropout variable here
-	if(isinstance(dropout, int)):
-		dropout = tf.placeholder_with_default(dropout, shape=(), name='dropout')
+	if(isinstance(dropout, (int, float))):
+		dropout = tf.placeholder_with_default(tf.to_float(dropout), shape=(), name='dropout')
 	elif(not isinstance(dropout, tf.Tensor)):
 		raise Exception('Dropout in wrong type, not tf.Tensor|tf.Operation|number')
 	# Input variation here
@@ -183,20 +183,21 @@ def createEncoder(settingDict):
 	if(bidirectional):
 		if(layerDepth % 2 != 0):
 			raise Exception("Bidirectional network must have an even number of layers")
-		layerDepth = layerDepth / 2
+		layerDepth = layerDepth // 2
 		
 		forwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_forward')
 		backwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_backward')
 		
 		outputs, state = tf.nn.bidirectional_dynamic_rnn(forwardLayers, backwardLayers, inputs, dtype=tf.float32)
 		outputs = tf.concat(outputs, -1)
-		if(layerDepth == 1):
-			state = [state]
-		else:
-			allState = []
-			for i in range(layerDepth):
-				allState.extend([state[0][i], state[1][i]])
-			state = tuple(allState)
+		state = tuple([cellState[0] for cellState in state])
+		#if(layerDepth > 1):
+		#	state = [state]
+		#else:
+		#	allState = []
+		#	for i in range(layerDepth):
+		#		allState.extend((state[0][i], state[1][i]))
+		#	state = tuple(allState)
 	else:
 		layers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 		
@@ -206,18 +207,28 @@ def createEncoder(settingDict):
 	
 def createDecoder(settingDict):
 	prefix = settingDict.get('prefix', 'decoder')
-	isBareMode = settingDict.get('mode', True)
+	# isBareMode = settingDict.get('mode', True)
 	# the batchSize/maximumDecoderLength must be a placeholder that is filled during inference
 	batchSize = settingDict['batchSize']; maximumDecoderLength = settingDict['maximumDecoderLength']; outputEmbedding = settingDict['outputEmbedding']
 	encoderState = settingDict['encoderState']; correctResult = settingDict['correctResult']; decoderOutputSize = settingDict['decoderOutputSize']
 	correctResultLen = settingDict['correctResultLen']; startToken = settingDict['startTokenId']; endToken = settingDict['endTokenId']
-	decoderTrainingInput = settingDict['decoderInput']
 	cellType = settingDict.get('cellType', 'lstm')
 	cellType = tf.contrib.rnn.BasicLSTMCell
 	forgetBias = settingDict.get('forgetBias', 1.0)
 	dropout = settingDict.get('dropout', 1.0)
 	layerSize = settingDict.get('layerSize', decoderOutputSize)
 	layerDepth = settingDict.get('layerDepth', 2)
+	
+	decoderTrainingInput = settingDict.get('decoderInput', None)
+	if(decoderTrainingInput is None):
+		# the training input append startToken id to the front of all training sentences 
+		correctShape = tf.shape(correctResult)
+		decoderTrainingInput = tf.concat((tf.fill([correctShape[0], 1], startToken), correctResult), axis=1)
+		# remove the last index in d2 (tf.Tensor.getittem)
+		# decoderTrainingInput = tf.slice(decoderTrainingInput, [0, 0], [correctShape[0], correctShape[1] - 2])
+		decoderTrainingInput = decoderTrainingInput[0:, 0:-1]
+		# look up the input through the outputEmbedding
+		decoderTrainingInput = tf.nn.embedding_lookup(outputEmbedding, decoderTrainingInput, name='input_decoder_vectors')
 	
 	attentionMechanism = settingDict.get('attention', None)
 	if(attentionMechanism is not None):
@@ -226,9 +237,9 @@ def createDecoder(settingDict):
 		encoderLengthList = settingDict['encoderLengthList']
 		# attentionLayerSize = settingDict.get('attentionLayerSize', 1)
 		if('luong' in attentionMechanism):
-			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, encoderOutput, memory_sequence_length=encoderLengthList, scale=('scaled' in attentionMechanism))
+			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, scale=('scaled' in attentionMechanism))
 		elif('bahdanau' in attentionMechanism):
-			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, encoderOutput, memory_sequence_length=encoderLengthList, normalize=('norm' in attentionMechanism))
+			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, normalize=('norm' in attentionMechanism))
 		else:
 			attentionMechanism = None
 	# Dropout must be a placeholder/operation by now, as encoder will convert it
@@ -236,45 +247,44 @@ def createDecoder(settingDict):
 	# Decoder construction here
 	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 	if(attentionMechanism is not None):
-		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, name=prefix + '_attention_wrapper')
+		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, initial_cell_state=encoderState , name=prefix + '_attention_wrapper')
 	# conversion layer to convert from the hiddenLayers size into vector size if they have a mismatch
 	# Helper for training using the output taken from the encoder outside
-	trainHelper = tf.contrib.seq2seq.TrainingHelper(decoderTrainingInput, tf.fill([batchSize], maximumDecoderLength))
-	# Helper for feeding the output of the current timespan for the inference mode
-	startToken = tf.fill([batchSize], startToken)
-	if(isBareMode):
-		# Helper feeding the output directly into next input
-		inferHelper = CustomGreedyEmbeddingHelper(outputEmbedding, startToken, endToken, True)
+	if('samplingVariable' not in settingDict):
+		trainHelper = tf.contrib.seq2seq.TrainingHelper(decoderTrainingInput, correctResultLen)
 	else:
-		# Helper using the argmax output as input
-		inferHelper = tf.contrib.seq2seq.GreedyEmbeddingHelper(outputEmbedding, startToken, endToken)
+		trainHelper = tf.contrib.seq2seq.ScheduledEmbeddingTrainingHelper(decoderTrainingInput, correctResultLen, outputEmbedding, settingDict['samplingVariable'])
+	# Helper for feeding the output of the current timespan for the inference mode
+	inferHelper = tf.contrib.seq2seq.GreedyEmbeddingHelper(outputEmbedding, tf.fill([batchSize], startToken), endToken)
 	# Projection layer
-	projectionLayer = tf.layers.Dense(decoderOutputSize, name=prefix+'_projection')
-	# create the initial state out of a clone
-	initialState = decoderCells.zero_state(dtype=tf.float32, batch_size=batchSize).clone(cell_state=encoderState)
+	projectionLayer = tf.layers.Dense(decoderOutputSize, name=prefix+'_projection') if(layerSize != decoderOutputSize) else None
+	# create the initial state out by cloning
+	initialState = decoderCells.zero_state(dtype=tf.float32, batch_size=batchSize)
+	if(isinstance(initialState, (list, tuple)) and not isinstance(initialState, tf.contrib.seq2seq.AttentionWrapperState)):
+		# check encoder state is the same
+		# print(initialState, '\n', encoderState)
+		assert len(initialState) == len(encoderState)
+		initialState = encoderState
+	#else:
+	#	initialState = initialState.clone(cell_state=encoderState)
 	# depending on the mode being training or infer, use either Helper as fit
 	inferDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, inferHelper, initialState, output_layer=projectionLayer)
 	trainDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, trainHelper, initialState, output_layer=projectionLayer)
 	# Another bunch of stuff I don't understand. Apparently the outputs and state are being created automatically. Yay.
-	inferOutput, inferDecoderState, _ = tf.contrib.seq2seq.dynamic_decode(inferDecoder, maximum_iterations=maximumDecoderLength)
-	trainOutput, trainDecoderState, _ = tf.contrib.seq2seq.dynamic_decode(trainDecoder)
+	inferOutput, _, _ = tf.contrib.seq2seq.dynamic_decode(inferDecoder, maximum_iterations=maximumDecoderLength)
+	trainOutput, _, _ = tf.contrib.seq2seq.dynamic_decode(trainDecoder)
 	trainLogits = trainOutput.rnn_output
-	inferLogits = inferOutput.rnn_output
+	# inferLogits = inferOutput.rnn_output
 	'''if(decoderOutputSize != layerSize):
 		trainLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=None)
 		inferLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=True)'''
 	# sample_id is the argmax of the output. It can be used during beam searches and training
-	sample_id = trainOutput.sample_id
+	# sample_id = trainOutput.sample_id
 	# correctResult in bareMode are [batchSize, maximumDecoderLength, vectorSize] represent correct value expected.
 	# correctResult in bareMode are [batchSize, maximumDecoderLength] represent correct ids expected.
-	if(isBareMode):
-		lossOp, crossent = createDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
-		secondaryLossOp, secondaryCrossent = createDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength, True)
-		return (trainLogits, inferLogits), (lossOp, secondaryLossOp), (trainDecoderState, inferDecoderState), (crossent, secondaryCrossent)
-	else:
-		lossOp, crossent = createSoftmaxDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
-		secondaryLossOp, secondaryCrossent = createSoftmaxDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength, True)
-		return (inferLogits, trainLogits), (lossOp, secondaryLossOp), (inferDecoderState, trainDecoderState), (tf.argmax(inferLogits, axis=2), tf.argmax(trainLogits, axis=2)), (crossent, secondaryCrossent)
+	lossOp, crossent = createSoftmaxDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
+	# secondaryLossOp, secondaryCrossent = createSoftmaxDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
+	return trainLogits, lossOp, (trainOutput.sample_id, inferOutput.sample_id), crossent
 	
 def createSingleDecoder(isTrainingMode, settingDict):
 	prefix = settingDict.get('prefix', 'decoder')
@@ -335,32 +345,32 @@ def createOptimizer(settingDict):
 	assert all(key in settingDict for key in ['mode', 'loss'])
 	loss = settingDict['loss']
 	mode = settingDict['mode']
-	if(mode == 'sgd'):
+	if(mode.lower() == 'sgd'):
 		# optimizer = 
 		trainingRate = settingDict['trainingRate']
 		if(isinstance(trainingRate, float)):
 			trainingRate = tf.constant(trainingRate, dtype=tf.float32, name='training_rate_default')
 		# warmUp and decay scheme. Customize later
-		if('globalStep' in settingDict):
-			globalStep = settingDict['globalStep']
-			assert isinstance(globalStep, tf.Variable)
-		if('warmupTraining' in settingDict and 'globalStep' in locals()):
+		if('globalSteps' in settingDict):
+			globalSteps = settingDict['globalSteps']
+			assert isinstance(globalSteps, tf.Variable)
+		if('warmupTraining' in settingDict and 'globalSteps' in locals()):
 			warmupStep, warmupThreshold = settingDict['warmupTraining']
 			warmupFactor = tf.exp(-2 / warmupStep)
-			inverseDecay = warmupFactor**(tf.to_float(warmupStep - globalStep))
-			trainingRate = tf.cond(globalStep < warmupThreshold ,
-									lambda: inverseDecay * trainingRate,
-									lambda: trainingRate)
-		if('decayTraining' in settingDict and 'globalStep' in locals()):
+			inverseDecay = warmupFactor**(tf.to_float(warmupStep - globalSteps))
+			trainingRate = tf.cond(globalSteps < warmupThreshold ,
+									true_fn=lambda: inverseDecay * trainingRate,
+									false_fn=lambda: trainingRate)
+		if('decayTraining' in settingDict and 'globalSteps' in locals()):
 			decayStep, decayThreshold, decayFactor = settingDict['decayTraining']
 			# warmupFactor = tf.exp(-2 / decayStep)
-			# decayFactor = warmupFactor**(tf.to_float(warmupStep - globalStep))
-			trainingRate = tf.cond(globalStep >= decayThreshold,
-									lambda: tf.train.exponential_decay(trainingRate,(globalStep - decayThreshold), decayStep, decayFactor, staircase=True),
-									lambda: trainingRate)
+			# decayFactor = warmupFactor**(tf.to_float(warmupStep - globalSteps))
+			trainingRate = tf.cond(globalSteps >= decayThreshold,
+									true_fn=lambda: tf.train.exponential_decay(trainingRate,(globalSteps - decayThreshold), decayStep, decayFactor, staircase=True),
+									false_fn=lambda: trainingRate)
 		
 		return tf.train.GradientDescentOptimizer(trainingRate)
-	elif(mode == 'adam'):
+	elif(mode.lower() == 'adam'):
 		if('trainingRate' not in settingDict):
 			return tf.train.AdamOptimizer()
 		else:
@@ -370,7 +380,7 @@ def createOptimizer(settingDict):
 		raise Exception("Optimizer not specified.")
 	
 def configureGradientOptions(optimizer, settingDict):
-	assert all(key in settingDict for key in ['colocateGradient', 'clipGradient', 'globalStep', 'loss'])
+	assert all(key in settingDict for key in ['colocateGradient', 'clipGradient', 'globalSteps', 'loss'])
 	loss = settingDict['loss']
 	colocateGradient = settingDict['colocateGradient']
 	# The gradient of all params affected 
@@ -382,8 +392,8 @@ def configureGradientOptions(optimizer, settingDict):
 	gradientClipValue, globalNorm = tf.clip_by_global_norm(gradients, gradientClipValue)
 	zippedGradientList = list(zip(gradientClipValue, affectedParams))
 	# print(zippedGradientList[0])
-	globalStep = settingDict['globalStep']
-	return optimizer.apply_gradients(zippedGradientList, global_step=globalStep)
+	globalSteps = settingDict['globalSteps']
+	return optimizer.apply_gradients(zippedGradientList, global_step=globalSteps)
 	
 def createDecoderLossOperation(logits, correctResult, sequenceLengthList, batchSize, maxUnrolling, extraWeightTowardTop=False):
 	# the maximum unrolling and batchSize for the encoder during the entire batch. correctResult should be [batchSize, sentenceSize, vectorSize], hence [1] and [0]
@@ -403,20 +413,16 @@ def createDecoderLossOperation(logits, correctResult, sequenceLengthList, batchS
 	loss = tf.reduce_sum(tf.multiply(subtract, target_weights, name="subtract")) / tf.to_float(batchSize)
 	return loss, target_weights
 	
-def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, batchSize, maxUnrolling, extraWeightTowardTop=False):
+def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, batchSize, maxUnrolling):
 	# logits are undoing softmax, compare it with correctIds. the correctIds will converted to onehot upon use
 	# raise the values in logits to prevent 0. May work or may not
-	logits = tf.clip_by_value(logits, 1e-10, 1e10)
+	# logits = tf.clip_by_value(logits, 1e-10, 1e10)
 	crossent = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=correctIds, logits=logits)
 	# subtract = tf.reduce_mean(tf.square(tf.subtract(correctResult, logits)), axis=2)
 	# mask to only calculate loss on the length of the sequence, not the padding
 	target_weights = tf.sequence_mask(sequenceLengthList, maxUnrolling, dtype=tf.float32)
-	# May not be the most efficient opperation, but I digress
-	# target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
-	# The top units will be extra weights, used for greedyEmbeddingHelper as their initial results are extremely important
-	if(extraWeightTowardTop):
-		unrollingMask = tf.range(4, 0, -4.0 / tf.to_float(maxUnrolling))
-		target_weights = tf.multiply(target_weights, unrollingMask)
+	# May not be the most efficient opperation, but I digress. Split the loss by the length of the correct sentence
+	target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
 	# the loss function being the reduce mean of the entire batch
 	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="crossent")) / tf.to_float(batchSize)
 	return loss, target_weights

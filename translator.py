@@ -137,7 +137,7 @@ def createSession(args, embedding):
 	tgtEmbeddingDict, _, tgtEmbeddingVector = tgtEmbedding
 	if(srcEmbeddingVector is None or tgtEmbeddingVector is None):
 		# initialize in vocab mode - random due to arguments
-		embeddingSize = args.size_hidden_layer
+		embeddingSize = args.layer_size
 		tgtNumWords = len(tgtEmbeddingDict)
 		minVal, maxVal = args.initialize_range
 		if(args.vocab_init in ['gaussian', 'normal', 'xavier']):
@@ -156,13 +156,13 @@ def createSession(args, embedding):
 	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding, name='output_mbedding')
 	
 	config = tf.ConfigProto()
-	config.gpu_options.allow_growth = True
+	# config.gpu_options.allow_growth = True
 	session = tf.Session(config=config)
 	# set the initializer to the entire session according to args.vocab_init
 	minVal, maxVal = args.initialize_range
 	initializer = tf.random_normal_initializer(mean=(maxVal+minVal)/2, stddev=(maxVal-minVal)/2) if(args.vocab_init in ['gaussian', 'normal', 'xavier']) \
 			else  tf.random_uniform_initializer(minval=minVal, maxval=maxVal)
-	args.print_verbose("Initializer range (%d - %d), type %s" % (minVal, maxVal, args.vocab_init))
+	args.print_verbose("Initializer range (%d -> %d), type %s" % (minVal, maxVal, args.vocab_init))
 	
 	tf.get_variable_scope().set_initializer(initializer)
 	# dropout value, used for training. Must reset to 1.0(all) when infer
@@ -170,9 +170,9 @@ def createSession(args, embedding):
 	# input in shape (batchSize, inputSize) - not using timemayor
 	input = tf.placeholder(shape=[None, None], dtype=tf.int32, name='input')
 	# input are lookup from the known srcEmbeddingVector, shape (batchSize, inputSize, embeddingSize)
-	inputVector = tf.nn.embedding_lookup(srcEmbeddingVector, input, name='input_vectors')
+	inputVector = tf.nn.embedding_lookup(srcEmbeddingVector, input, name='input_encoder_vectors')
 	# craft the encoder depend on the input vector. Currently using default values for all version
-	settingDict = {'inputType':inputVector, 'layerSize':embeddingSize, 'inputSize':None, 'dropout':dropout}
+	settingDict = {'inputType':inputVector, 'layerSize':embeddingSize, 'layerDepth':args.layer_depth, 'inputSize':None, 'dropout':dropout, 'bidirectional':True}
 	inputFromEncoder, encoderOutput, encoderState, dropoutFromEncoder = builder.createEncoder(settingDict)
 	assert inputFromEncoder is inputVector and dropoutFromEncoder is dropout
 	# craft the output in shape (batchSize, outputSize)
@@ -187,17 +187,19 @@ def createSession(args, embedding):
 	maximumUnrolling = tf.placeholder_with_default(args.maximum_sentence_length, shape=(), name='decoder_maximum_length')
 	# likewise, the output will be looked up into shape (batchSize, inputSize, embeddingSize)
 	# outputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, output)
-	decoderInputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, decoderInput, name='output_vectors')
+	# stop using decoderInputVector as a test
+	# decoderInputVector = tf.nn.embedding_lookup(tgtEmbeddingVector, decoderInput, name='input_decoder_vectors')
 	# decoder will use the encoderState to work, outputVector and tgtEmbeddingVector for lookup check
 	# also need a mode placeholder for switching between decoder helper and the start/end tokenId to search for 
 	startTokenId, endTokenId = tgtEmbeddingDict[args.start_token], tgtEmbeddingDict[args.end_token]
+	args.print_verbose("Start token is %d. End token is %d." % (startTokenId, endTokenId))
 	# mode = tf.placeholder_with_default(True, shape=())
 	# construct the settingDict
-	settingDict['mode'] = False
+	# settingDict['mode'] = False
 	settingDict['startTokenId'] = startTokenId; settingDict['endTokenId'] = endTokenId
-	settingDict['correctResult'] = output; settingDict['outputEmbedding'] = tgtEmbeddingVector; settingDict['layerSize'] = embeddingSize
+	settingDict['correctResult'] = output; settingDict['outputEmbedding'] = tgtEmbeddingVector;
 	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['decoderOutputSize'] = tgtNumWords
-	settingDict['batchSize'] = batchSize; settingDict['maximumDecoderLength'] = maximumUnrolling; settingDict['decoderInput'] = decoderInputVector
+	settingDict['batchSize'] = batchSize; settingDict['maximumDecoderLength'] = maximumUnrolling; # settingDict['decoderInput'] = decoderInputVector
 	if(args.attention):
 		# Duplicate spotted
 		# inputLengthList = tf.placeholder(shape=[None], dtype=tf.int32, name='')
@@ -205,33 +207,64 @@ def createSession(args, embedding):
 		settingDict['encoderOutput'] = encoderOutput
 		settingDict['encoderLengthList'] = inputLengthList
 	else:
-		inputLengthList = None
-	logits, loss, decoderState, outputIds, crossent = builder.createDecoder(settingDict)
+		# as feed_dict do not allow None in 1.5, we leave the placeholder be
+		# inputLengthList = None
+		pass
+		
+	
+	settingDict['globalSteps'] = tf.train.get_or_create_global_step() #tf.Variable(args.global_steps, trainable=False, dtype=tf.int32, name='global_steps')
+	if(args.scheduled_sampling_rate > 0.0 and args.scheduled_sampling_step > 0):
+		# Create the needed steps for the decoder to use
+		stairStep = tf.to_float(settingDict['globalSteps'] // tf.constant(args.scheduled_sampling_step, dtype=settingDict['globalSteps'].dtype))
+		if(args.scheduled_sampling_type == 'linear'):
+			settingDict['samplingVariable'] = tf.maximum(1.0 - args.scheduled_sampling_rate * stairStep, 1.0)
+		elif(args.scheduled_sampling_type == 'exp'):
+			settingDict['samplingVariable'] = tf.pow(args.scheduled_sampling_rate, stairStep)
+		elif(args.scheduled_sampling_type == 'inv_sigmoid'):
+			k = args.scheduled_sampling_rate
+			settingDict['samplingVariable'] = k / (k + tf.exp(stairStep / k))
+	
+	logits, loss, outputIds, _ = builder.createDecoder(settingDict)
 	# TrainingOp function, built on the loss function
 	settingDict['mode'] = args.optimizer
 	settingDict['trainingRate'] = args.learning_rate
-	settingDict['globalStep'] = tf.Variable(0, trainable=False, dtype=tf.int32, name='global_steps')
-	settingDict['incrementGlobalStep'] = tf.assign_add(settingDict['globalStep'], 1)
-	if(args.warmup_threshold > 0):
-		if(args.warmup_steps <= 0):
-			args.warmup_steps = args.warmup_threshold // 5
-		settingDict['warmupTraining'] = (args.warmup_steps, args.warmup_threshold)
-	if(args.decay_threshold >= 0):
-		settingDict['decayTraining'] = (args.decay_steps, args.decay_threshold, args.decay_factor)
+	settingDict['incrementGlobalStep'] = tf.assign_add(settingDict['globalSteps'], 1)
 	
-	settingDict['loss'] = loss[0]
-	trainingTrainOp = builder.createOptimizer(settingDict)
-	settingDict['loss'] = loss[1]
-	inferTrainOp = builder.createOptimizer(settingDict)
-	# All ops will return (optimizer, incrementGlobalStep) tuple, the second one only available in sgd warmup/decay
-	# globalStep & loss already in
-	settingDict['colocateGradient'] = args.colocate
-	settingDict['clipGradient'] = args.gradient_clipping
-	trainingGradient = builder.configureGradientOptions(trainingTrainOp, settingDict)
-	inferGradient = builder.configureGradientOptions(inferTrainOp, settingDict)
-	# incrementGlobalStep always run after a trainingOp is called
-	trainingTrainOp = tf.group(trainingGradient, settingDict['incrementGlobalStep'])
-	inferTrainOp = tf.group(inferGradient, settingDict['incrementGlobalStep'])
+	if(args.dynamic_clipping):
+		args.dynamic_clipping = tf.placeholder(shape=(), dtype=tf.float32)
+		args.gradient_clipping = args.dynamic_clipping * tf.constant(args.gradient_clipping)
+	
+	if(True):
+		# Manual construction of training op, currently not in use
+		if(args.warmup_threshold > 0):
+			args.print_verbose("Has warmup in setting.")
+			if(args.warmup_steps <= 0):
+				args.warmup_steps = args.warmup_threshold // 5
+			settingDict['warmupTraining'] = (args.warmup_steps, args.warmup_threshold)
+		if(args.decay_threshold >= 0):
+			args.print_verbose("Has decay in setting.")
+			settingDict['decayTraining'] = (args.decay_steps, args.decay_threshold, args.decay_factor)
+			
+		settingDict['loss'] = loss
+		trainingTrainOp = builder.createOptimizer(settingDict)
+		# All ops will return (optimizer, incrementGlobalStep) tuple, the second one only available in sgd warmup/decay
+		settingDict['colocateGradient'] = args.colocate
+		settingDict['clipGradient'] = args.gradient_clipping
+		trainingGradient = builder.configureGradientOptions(trainingTrainOp, settingDict)
+		trainingTrainOp = tf.group(trainingGradient, settingDict['incrementGlobalStep'])
+	else:
+		# optimizerName = 'SGD' if args.optimizer.lower()=='sgd' else 'Adam' if args.optimizer.lower()=='adam' else None
+		if(args.decay_threshold >= 0):
+			threshold = tf.constant(args.decay_threshold)
+			def decayFunction(trainingRate, globalSteps):
+				return tf.cond(global_steps >= threshold, 
+							true_fn=lambda: exponential_decay(trainingRate,(globalSteps - threshold), args.decay_steps, args.decay_factor, staircase=True),
+							false_fn=trainingRate)
+		else:
+			decayFunction = None
+		
+		trainingTrainOp = tf.contrib.layers.optimize_loss(loss, tf.train.get_global_step(), args.learning_rate, args.optimizer,
+				clip_gradients=args.gradient_clipping, learning_rate_decay_fn=decayFunction, colocate_gradients_with_ops=args.colocate, name='optimizer')
 	# initiate the session
 	session.run(tf.global_variables_initializer())
 	
@@ -241,52 +274,43 @@ def createSession(args, embedding):
 	
 	inputOutputTuple = [input, output, decoderInput]
 	configTuple = [inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, outputIds]
-	trainTuple = [[loss[0], trainingTrainOp], [loss[1], inferTrainOp]]
+	trainTuple = [loss, trainingTrainOp]
 	
 	return session, inputOutputTuple, configTuple, trainTuple
-	
-def trainSessionOneBatch(args, sessionTuple, batch):
-	## Currently unupdated. Remove.
-	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
-	# unpack tensor placeholders to add to feed_dict
-	input, output, decoderInput = inputOutputTuple
-	inputLengthList, outputLengthList, batchSize, maximumUnrolling, _, _ = configTuple
-	# batch is formatted sets which had been padded into 2d (batchSize, maximumUnrolling) for both input/output
-	# should be formattted as follow
-	feed_dict = {input:batch[0], output:batch[1], batchSize:batch[2], outputLengthList:batch[3], maximumUnrolling:max(batch[3]), decoderInput:batch[4]}
-	loss, _ = session.run(trainTuple[1], feed_dict=feed_dict)
-	return loss
 	
 def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
 	inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, _ = configTuple
 	avgLosses = [0]
-	useTrainingHelper = True
+	loss = 1.0
 	for step in range(args.epoch):
-		if(not args.train_greedy):
-			args.print_verbose(("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
+		#if(not args.train_greedy):
+		#	args.print_verbose(("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
 		for batch in batches:
 			args.global_steps += 1
 			trainInput, trainCorrectOutput, trainInputLengthList, trainOutputLengthList, trainDecoderInput = batch
 			feed_dict = {input:trainInput, output:trainCorrectOutput, decoderInput:trainDecoderInput, inputLengthList:trainInputLengthList, outputLengthList:trainOutputLengthList, \
 				batchSize:len(trainInput), maximumUnrolling:max(trainOutputLengthList), dropout:args.dropout}
-			loss, _ = session.run(trainTuple[0 if useTrainingHelper else 1], feed_dict=feed_dict)
+			if(args.dynamic_clipping is not False):
+				feed_dict[args.dynamic_clipping] = loss
+			loss, _ = session.run(trainTuple, feed_dict=feed_dict)
 			if(np.isnan(loss)):
-				print("Loss nan @ global_step {}, feed_dict {}".format(args.global_steps, feed_dict))
+				print("Loss nan @ global_steps {}, feed_dict {}".format(args.global_steps, feed_dict))
 				findNanSession(args, session)
 				sys.exit(0)
 			#else:
-			#	args.print_verbose("Loss %.4f @ global_step %d" % (loss, args.global_steps))
+			#	args.print_verbose("Loss %.4f @ global_steps %d" % (loss, args.global_steps))
 			avgLosses[-1] += loss
-			if(args.verbose and args.global_steps % 1000 == 0):
-				args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
-			if((args.global_steps+1) % args.debug_steps == 0):
+			if(args.verbose):
+				if(args.global_steps % 100 == 0):
+					args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
+			if((args.global_steps+1) % args.debug_steps == 0 and args.debug):
 				debugSession(args, session)
 		avgLosses[-1] = avgLosses[-1] / len(batches)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
 			# run evaluationFunction every evaluation_step epoch
-			useTrainingHelper = evaluationFunction((step+1,avgLosses))
+			evaluationFunction((step+1,avgLosses))
 		avgLosses.append(0)
 	return avgLosses
 	
@@ -297,20 +321,21 @@ def evaluateSession(args, sessionTuple, dictTuple, sampleBatch):
 	_, _, tgtEmbeddingVector = dictTuple[1]
 	sampleInput, sampleCorrectOutput, sampleInputLengthList, sampleOutputLengthList, sampleDecoderInput = sampleBatch
 	# feed_dict = {input:sampleInput, outputLengthList:sampleOutputLengthList, batchSize:sampleBatch[2], maximumUnrolling:max(sampleBatch[3]), decoderInput:sampleDecoderInput, dropout:1.0}
-	feed_dict = { input:sampleInput, decoderInput:sampleDecoderInput, inputLengthList:sampleInputLengthList, outputLengthList:sampleOutputLengthList, \
+	feed_dict = { input:sampleInput, output:sampleCorrectOutput, inputLengthList:sampleInputLengthList, outputLengthList:sampleOutputLengthList, \
 				batchSize:len(sampleInput), maximumUnrolling:max(sampleOutputLengthList), dropout:1.0 }
+	# print(feed_dict.keys())
 	sampleResult = session.run(outputIds, feed_dict=feed_dict)
 	return sampleResult
 
 def inferenceSession(args, session, data):
 	session, inputOutputTuple, configTuple, _ = sessionTuple
 	input, _, _ = inputOutputTuple
-	batchSize, _, maximumUnrolling, dropout, outputIds = configTuple
+	inputLengthList, _, batchSize, maximumUnrolling, dropout, outputIds = configTuple
 	inferrenceGreedyOutput, _ = outputIds
 	# Use default values for maximumUnrolling. Defaulted, but just do it to be sure. outputLengthList and decoderInput should not be neccessary as we are calling only GreedyEmbeddingHelper
 	output = []
-	for infInput in data:
-		feed_dict = {input:infInput, batchSize:len(infInput), maximumUnrolling:args.maximum_sentence_length, dropout:1.0}
+	for infInput, infInputLength in data:
+		feed_dict = {input:infInput, inputLengthList:infInputLength, batchSize:len(infInput), maximumUnrolling:args.maximum_sentence_length, dropout:1.0}
 		decodeOutput = session.run(inferrenceGreedyOutput, feed_dict=feed_dict)
 		output.append(decodeOutput)
 	return output
@@ -457,7 +482,7 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	return batchedSentences
 	
 def padMatrix(matrix, paddingToken):
-	# find the longest line in the matrix
+	# find the longest line in the matrix to do the padding
 	# TODO plus one for the longest if not crossing abitrary maxLength
 	originalLength = [len(sentence) for sentence in matrix]
 	maxLen = max(originalLength)
@@ -610,7 +635,7 @@ def calculateBleu(correct, result, trimData=None):
 		source, target = correct[i], result[i]
 		# print(source, target)
 		if(trimData is not None):
-			correctLen = trimData[i]
+			correctLen = min(trimData[i], len(source), len(target))
 			source = source[:correctLen]
 			target = target[:correctLen]
 		# leave the id as is, joining
@@ -679,7 +704,7 @@ if __name__ == "__main__":
 	parser.add_argument('-m','--mode', type=str, default='train', help='Mode to run the file. Currently only train|infer')
 	parser.add_argument('--read_mode', type=str, default='embedding', help='Read binary, pickled, dictionary files as embedding, or vocab files. Default embedding')
 	parser.add_argument('--import_default_dict', action='store_false', help='Do not use the varied length original embedding instead of the normalized version.')
-	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be set to True in vocab read_mode.')
+	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be forced to True in vocab read_mode.')
 	parser.add_argument('--vocab_init', type=str, default='uniform', help='Choose type of initializer for vocab mode. Default uniform, can be normal(gaussian).')
 	parser.add_argument('--directory', type=str, default=os.path.dirname(os.path.realpath(__file__)), help='The dictionary to keep all the training files. Default to the running directory.')
 	parser.add_argument('-e', '--embedding_file_name', type=str, default='vocab', help='The names of the files for vocab or embedding. Default vocab.')
@@ -696,11 +721,13 @@ if __name__ == "__main__":
 	parser.add_argument('-s', '--save_path', type=str, default=None, help='Directory to load and save the trained model. Required in training mode.')
 	parser.add_argument('-b', '--batch_file_name', type=str, default=None, help='The names of created batch file for training. If not specified, will try to look for it in save_path with "bat" extension .')
 	parser.add_argument('--save_batch', action='store_true', help='If specified, the batch will be saved to batch_file_name for future training.')
-	parser.add_argument('--size_hidden_layer', type=int, default=128, help='Size of hidden layer in each cell. Default to 128. Will be rewritten to size of embedding if in embedding read_mode.')
 	parser.add_argument('--epoch', type=int, default=100, help='How many times this model will train on current data. Default 100.')
 	parser.add_argument('--evaluation_step', type=int, default=20, help='For each evaluation_step epoch, run the check for accuracy. Default 20.')
 	parser.add_argument('--maximum_sentence_length', type=int, default=50, help='Maximum length of sentences. Default 50.')
 	parser.add_argument('--batch_size', type=int, default=128, help='Size of mini-batch for training. Default 128.')
+	
+	parser.add_argument('--layer_size', type=int, default=128, help='Size of hidden layer in each cell. Default to 128. Will be rewritten to size of embedding if in embedding read_mode.')
+	parser.add_argument('--layer_depth', type=int, default=2, help='Depth of the greatest cell (number of sub-cell within it). Default 2.')
 	
 	# SAVE STUFF
 	parser.add_argument('--load_params', action='store_true', help='Use a json or pickle file as setting. All arguments found in file will be overwritten.')
@@ -710,17 +737,21 @@ if __name__ == "__main__":
 	
 	# MODEL CONFIG
 	parser.add_argument('-a', '--attention', type=str, default=None, help='If specified, use attention architecture.')
-	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
+#	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
 	parser.add_argument('--colocate', action='store_true', help='If specified, do colocate regarding gradient calculation.')
 	parser.add_argument('--dropout', type=float, default=1.0, help='The dropout used for training. Will be automatically set to 1.0 in infer mode. Default 1.0')
-	parser.add_argument('--optimizer', type=str, default='sgd', help='The optimizer used for training. Default SGD.')
-	parser.add_argument('--learning_rate', type=float, default=None, help='The learning rate used for training. Default 1.0for SGD and 0.001 for Adam.')
+	parser.add_argument('--optimizer', type=str, default='SGD', help='The optimizer used for training. List in tf.contrib.layer.optimize_loss function . Default SGD.')
+	parser.add_argument('--learning_rate', type=float, default=None, help='The learning rate used for training. Default 1.0 for SGD and 0.001 for Adam.')
 	parser.add_argument('--warmup_threshold', type=int, default=0, help='The warmup step used for learning rate (on global steps). If unspecified, will not use warmup.')
 	parser.add_argument('--warmup_steps', type=int, default=0, help='The warmup factor for steps. Default 1/5 of the threshold.')
-	parser.add_argument('--decay_steps', type=int, default=1000, help='The steps to staircase the learning rate decay (on global steps). Default 1000.')
 	parser.add_argument('--decay_threshold', type=int, default=-1, help='The threshold to begin decay. If unspecified, will not use decay.')
+	parser.add_argument('--decay_steps', type=int, default=1000, help='The steps to staircase the learning rate decay (on global steps). Default 1000.')
 	parser.add_argument('--decay_factor', type=float, default=0.5, help='The factor to multiply at each decay_steps. Default 0.5')
 	parser.add_argument('--gradient_clipping', type=float, default=5.0, help='The maximum value for gradient. Default 5.0')
+	parser.add_argument('--dynamic_clipping', action='store_true', help='If activate, clip the gradients based on the losses multiplying the gradient_clipping variable.')
+	parser.add_argument('--scheduled_sampling_rate', type=float, default=0.0, help='If specified > 0.0, use ScheduledEmbeddingTrainingHelper with the rate with step')
+	parser.add_argument('--scheduled_sampling_step', type=int, default=0, help='If specified a positive integer, use ScheduledEmbeddingTrainingHelper with the step specified')
+	parser.add_argument('--scheduled_sampling_type', type=str, default='linear', help='Use linear|exp|inv_sigmoid in the ScheduledEmbeddingTrainingHelper. Default use linear')
 
 	# DEBUG
 	parser.add_argument('--debug', action='store_true', help='When activated, run debugSession function every debug_steps during training.')
@@ -822,15 +853,14 @@ if __name__ == "__main__":
 			trainResult, inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
 			_, correctOutput, _, trimLength, trainInput = sample
 			print(stripResultArray(trainInput[rIdx1], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
-			print(stripResultArray(trainInput[rIdx1], endTokenId), '\n=> INFER: ', stripResultArray(inferResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
+			print('=> INFER: ', stripResultArray(inferResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
 			print(stripResultArray(trainInput[rIdx2], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
-			print(stripResultArray(trainInput[rIdx2], endTokenId), '\n=> INFER: ', stripResultArray(inferResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
+			print('=> INFER: ', stripResultArray(inferResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
 			trainResult = calculateBleu(correctOutput, trainResult, trimLength)
 			inferResult = calculateBleu(correctOutput, inferResult, trimLength)
 			print("Iteration %d, time passed %.2fs, BLEU score %2.2f(@train) and %2.2f(@infer) " % (iteration, getTimer(), trainResult * 100.0, inferResult * 100.0))
 			print("Losses during this cycle: {}".format(losses[-args.evaluation_step:]))
-			# The evaluation decide which model should we be improving if train_greedy is on
-			return not args.train_greedy or trainResult <= inferResult
+			return True
 		# evaluate the initialized model. Expect horrendous result
 		evaluationFunction((0, []))
 		# execute training
@@ -842,26 +872,30 @@ if __name__ == "__main__":
 			# Has coupling possible, use default functions
 			batchesCoupling, _ = createSentenceCouplingFromFile(args)
 			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
-			inferInput = [batch[0] for batch in batches] 
-			correctOutput = [batch[2] for batch in batches] 
+			inferInput = [batch[0] for batch in batches]
+			inferInputLength = [batch[2] for batch in batches]
+			correctOutput = [batch[1] for batch in batches] 
 			args.print_verbose("Go with correctOutput and proper batch")
 		else:
 			inferInput = generateInferenceInputFromFile(args, embeddingTuple)
 			correctOutput = None
 			args.print_verbose("Go without correctOutput")
-		inferOutput = inferenceSession(args, sessionTuple, inferInput)
+		inferOutput = inferenceSession(args, sessionTuple, zip(inferInput, inferInputLength))
 		
 		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0], '\n=>', inferOutput[0][0])
 		
+		print(np.shape(correctOutput))
+		# Flatten the inferOutput
 		inferOutput = np.concatenate(inferOutput, axis=0)
 		outputFile = outputInferenceToFile(args, embeddingTuple, inferOutput)
 		
-		# Flatten the inferOutput
 		if(correctOutput):
 			# Flatten the correctOutput and trimLength as well
-			correctOutput = np.concatenate(correctOutput, axis=0)
+			# correctOutput = np.concatenate(correctOutput, axis=0)
+			correctOutput = [item for sublist in correctOutput for item in sublist]
 			trimLength = np.concatenate([batch[3] for batch in batches])
-			inferResult = calculateBleu(correctOutput, inferResult, trimLength)
+			# print(np.shape(correctOutput), np.shape(inferOutput), np.shape(trimLength))
+			inferResult = calculateBleu(correctOutput, inferOutput, trimLength)
 			print("Inference mode ran and saved to %s, BLEU score %2.2f, time passed %.2fs" % (outputFile, inferResult * 100.0, getTimer()))
 		else:
 			print("Inference mode ran and saved to %s, time passed %.2fs" % (outputFile, getTimer()))
