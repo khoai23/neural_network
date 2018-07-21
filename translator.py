@@ -156,13 +156,13 @@ def createSession(args, embedding):
 	tgtEmbeddingVector = tf.Variable(tgtEmbeddingVector, dtype=tf.float32, trainable=args.train_embedding, name='output_mbedding')
 	
 	config = tf.ConfigProto()
-	# config.gpu_options.allow_growth = True
+	config.gpu_options.allow_growth = True
 	session = tf.Session(config=config)
 	# set the initializer to the entire session according to args.vocab_init
 	minVal, maxVal = args.initialize_range
 	initializer = tf.random_normal_initializer(mean=(maxVal+minVal)/2, stddev=(maxVal-minVal)/2) if(args.vocab_init in ['gaussian', 'normal', 'xavier']) \
 			else  tf.random_uniform_initializer(minval=minVal, maxval=maxVal)
-	args.print_verbose("Initializer range (%d -> %d), type %s" % (minVal, maxVal, args.vocab_init))
+	args.print_verbose("Initializer range (%.2f -> %.2f), type %s" % (minVal, maxVal, args.vocab_init))
 	
 	tf.get_variable_scope().set_initializer(initializer)
 	# dropout value, used for training. Must reset to 1.0(all) when infer
@@ -697,6 +697,15 @@ def tryLoadOrSaveParams(args, exception=None):
 		pickle.dump(dictParams, paramFile)
 		paramFile.close()
 	
+def strToRange(str):
+	try:
+		val = np.abs(float(str))
+		return (-val, val)
+	except ValueError:
+		str = str.strip("() ").split(',|')
+		return float(str[0], float(str[1]))
+	
+	
 if __name__ == "__main__":
 	# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
@@ -706,6 +715,7 @@ if __name__ == "__main__":
 	parser.add_argument('--import_default_dict', action='store_false', help='Do not use the varied length original embedding instead of the normalized version.')
 	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be forced to True in vocab read_mode.')
 	parser.add_argument('--vocab_init', type=str, default='uniform', help='Choose type of initializer for vocab mode. Default uniform, can be normal(gaussian).')
+	parser.add_argument('--initialize_range', type=strToRange, default=(-1.0, 1.0), help='The range to initialize variables, default (-1.0, 1.0).')
 	parser.add_argument('--directory', type=str, default=os.path.dirname(os.path.realpath(__file__)), help='The dictionary to keep all the training files. Default to the running directory.')
 	parser.add_argument('-e', '--embedding_file_name', type=str, default='vocab', help='The names of the files for vocab or embedding. Default vocab.')
 	parser.add_argument('-i', '--input_file_name', type=str, default='input', help='The names of the files for training or inference. Default input.')
@@ -772,7 +782,7 @@ if __name__ == "__main__":
 	# args.src_file = 'vi_tokenized.txt'
 	# args.tgt_file = 'ch_tokenized.txt'
 	# args.size_hidden_layer = 128
-	args.initialize_range = (-1.0, 1.0)
+	# args.initialize_range = (-1.0, 1.0)
 	# args.save_path = 'save\\initEmbedding'
 	# args.epoch = 100
 	# args.evaluation_step = 20
