@@ -866,7 +866,7 @@ def writerFormatter(separator='_'):
 		return ' '.join(["_P(T)_"] + ["C{}(T) C{}(dep)".format(i, i) for i in range(1, numChild+1)])
 		
 	def unpackTags(string):
-		tagList = [ fillWordToSize(tag, 4 if(i%2==0) else 6) for i, tag in enumerate(string.split(separator))]
+		tagList = [ fillWordToSize(tag, 4 if(i%2!=0) else 6) for i, tag in enumerate(string.split(separator))]
 		return ' '.join(tagList)
 	
 	def unpackValues(values):
