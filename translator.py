@@ -522,41 +522,6 @@ def getWordIdFromVectors(vectors, embedding, embeddingIsNormal=False, savedData=
 		return result, currentSaveData
 	return result
 	
-def createSessionStorageOps(session, opsAndTensors):
-	listOfOpsRecorded, listOfTensorRecorded = opsAndTensors
-	opsNames = []
-	for op in listOfOpsRecorded:
-		opsNames.append(op.name)
-	tensorsNames = []
-	for tensor in listOfTensorRecorded:
-		tensorsNames.append(tensor.name)
-	# print(opsNames, tensorsNames)
-	
-	tf.constant(opsNames, name="storageOps")
-	tf.constant(tensorsNames, name="storageTensors")
-def getOpsFromSessionStorage(session):
-	storageOps = tf.get_default_graph().get_tensor_by_name("storageOps:0")
-	storageTensors = tf.get_default_graph().get_tensor_by_name("storageTensors:0")
-	opsNames, tensorsNames = session.run([storageOps, storageTensors])
-	# apparently these string are saved as byte. WTF
-	opsList = [tf.get_default_graph().get_operation_by_name(opName.decode()) for opName in opsNames]
-	tensorsList = [tf.get_default_graph().get_tensor_by_name(tensorName.decode()) for tensorName in tensorsNames]
-	return opsList, tensorsList
-
-def sessionTupleToList(sessionTuple):
-	# Organize tensor/ops into list
-	_, inputOutputTuple, configTuple, trainTuple = sessionTuple
-	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits, outputIds = configTuple
-	loss, trainingOp = trainTuple
-	return [trainingOp], [input, output, batchSize, outputLengthList, maximumUnrolling, logits[0], logits[1], loss]
-def listToSessionTuple(opsAndTensor, session=None):
-	# Convert from list back to tensor/ops
-	opsList, tensorList = opsAndTensor
-	trainingOp = opsList[0]
-	input, output, batchSize, outputLengthList, maximumUnrolling, inferLogits, trainLogits, loss = tensorList
-	return session, (input, output), [batchSize, outputLengthList, maximumUnrolling, (inferLogits, trainLogits)], [loss, trainingOp]
-
 def testRun(args, sessionTuple, dictTuple):
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
 	input, output, decoderInput = inputOutputTuple
@@ -581,37 +546,6 @@ def testRun(args, sessionTuple, dictTuple):
 	print("Infer output:\n", testResultInfer)
 	print("Train output:\n", testResultTrain)
 	# print(session.run(logits[0], feed_dict={input:dummyInput, output:dummyOutput, outputLengthList:dummyOutputLengthList, batchSize:dummyBatchSize, maximumUnrolling:dummyMaximumUnrollingInBatch}))
-	sys.exit()
-
-def testSavingSession(args, sessionTuple):
-	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
-	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits, outputIds = configTuple
-	# assume session is constructed, run a dummy set
-	dummyInput = [[2, 4, 5, 0], [6, 7, 2, 0]]
-	dummyOutput = [[2, 4, 5, 0], [6, 7, 2, 0]]
-	dummyOutputLengthList = [3, 3]
-	dummyMaximumUnrollingInBatch = 4
-	dummyBatchSize = 2
-	feed_dict = {input:dummyInput, output:dummyOutput, outputLengthList:dummyOutputLengthList, batchSize:dummyBatchSize, maximumUnrolling:dummyMaximumUnrollingInBatch}
-	savedLogit, _ = session.run(logits[0], feed_dict=feed_dict)
-	# execute saving 
-	createSessionStorageOps(session, sessionTupleToList(sessionTuple))
-	builder.saveToPath(session, savePath)
-	# delete the entire graph
-	# reload
-	builder.loadFromPath(session, savePath)
-	sessionTuple = listToSessionTuple(getOpsFromSessionStorage(session))
-	# run the dummy set again, this time with the loaded tensor/ops
-	_, inputOutputTuple, configTuple, trainTuple = sessionTuple
-	input, output, decoderInput = inputOutputTuple
-	batchSize, outputLengthList, maximumUnrolling, logits = configTuple
-	# run the dummy set again, this time with the loaded tensor/ops
-	feed_dict = {input:dummyInput, output:dummyOutput, outputLengthList:dummyOutputLengthList, batchSize:dummyBatchSize, maximumUnrolling:dummyMaximumUnrollingInBatch}
-	loadedLogit, _ = session.run(logits[0], feed_dict=feed_dict)
-	print(savedLogit, loadedLogit)
-	assert savedLogit[0][0] == loadedLogit[0][0]
-	return session, inputOutputTuple, configTuple, trainTuple
 	sys.exit()
 	
 def outputInferenceToFile(args, embeddingTuple, inferOutput, leftAsIdx=False):
@@ -725,7 +659,7 @@ if __name__ == "__main__":
 	parser.add_argument('--tgt', type=str, required=True, help='The extension/prefix for the target files.')
 	parser.add_argument('--src', type=str, required=True, help='The extension/prefix for the source files.')
 	parser.add_argument('--prefix', action='store_true', help='If specified, tgt and src will be the prefix for the files.')
-	parser.add_argument('--unknown_word', type=str, default='*UNKNOWN*', help='Key in embedding/vocab standing for unknown word')
+	parser.add_argument('--unknown_word', type=str, default='<unk>', help='Key in embedding/vocab standing for unknown word')
 	parser.add_argument('--start_token', type=str, default='<s>', help='Key in embedding/vocab standing for the starting token')
 	parser.add_argument('--end_token', type=str, default='<\s>', help='Key in embedding/vocab standing for the ending token')
 	parser.add_argument('-s', '--save_path', type=str, default=None, help='Directory to load and save the trained model. Required in training mode.')

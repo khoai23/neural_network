@@ -806,6 +806,104 @@ def writeDataArff(fileoutDir, allExamples, wordDict, wordLen, tagDict, wordDefau
 	fileoutpac.close()
 	fileoutsib.close()
 
+def createFormatModel(numChild, separator):
+	numTags = 2 * numChild + 1
+	modelString = ["{}"] * numTags
+	modelString = separator.join(modelString)
+	# print("modelString: " + modelString)
+	
+	def modelFunction(formatString, node):
+		#allTags = [node.tag] + [child.tag for child in node.children] + [child.dependency for child in node.children]
+		allTags = [node.tag] + [f(child) for child in node.children for f in (lambda x: x.tag, lambda x:x.dependency)]
+		assert len(allTags) == numTags, "allTags: {}, numTags {}".format(allTags, numTags)
+		return formatString.format(*allTags)
+		
+	def modelValue(node, alignment):
+		norminal_positioned = [node] + node.children
+		old_positioned = sorted(norminal_positioned, key=lambda x: x.pos)
+		align_positioned = sorted(norminal_positioned, key=lambda x: alignment[x.pos] if(x.pos in alignment) else x.pos)
+		
+		key = separator.join([str(norminal_positioned.index(n)) for n in old_positioned])
+		value = separator.join([str(norminal_positioned.index(n)) for n in align_positioned])
+		return key + '>' + value
+	
+	return modelString, modelFunction, modelValue
+	
+def addTreeRelationByModelType(numChild, tree, alignmentDict, fullRelationDict, separator = '_'):
+	modelString, modelKeyFunction, modelValue= createFormatModel(numChild, separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
+	def tryAddingAllForMode(node):
+		if(len(node.children) == numChild):
+			# key = formatPAC % (node.tag, child.dependency, getDistance(child))
+			key =  modelKeyFunction(modelString, node)
+			posKey = modelValue(node, alignmentDict)
+			recorder = fullRelationDict.get(key, {})
+			fullRelationDict[key] = recorder
+			recorder[posKey] = recorder.get(posKey, 0) + 1
+	
+	recursiveRun(tryAddingAllForMode, tree)
+	
+	return fullRelationDict
+	
+def createRelationDataByModelType(numChild, treeList, alignmentList):
+	allRelationDict = {}
+	
+	for caseIdx in range(len(alignmentList)):
+		tree = next(treeList)
+		# tree = treeList[caseIdx]
+		alignment = alignmentList[caseIdx]
+		allRelationDict = addTreeRelationByModelType(numChild, tree, alignment, allRelationDict)
+		deleteTree(tree)
+	
+	return allRelationDict
+	
+def fillWordToSize(word, size):
+	if(len(word) < size):
+		return word + ' ' * (size - len(word))
+	return word
+
+def writerFormatter(separator='_'):
+	def labelWriter(numChild):
+		return ' '.join(["_P(T)_"] + ["C{}(T) C{}(dep)".format(i, i) for i in range(1, numChild+1)])
+		
+	def unpackTags(string):
+		tagList = [ fillWordToSize(tag, 4 if(i%2==0) else 6) for i, tag in enumerate(string.split(separator))]
+		return ' '.join(tagList)
+	
+	def unpackValues(values):
+		posBefore, posAfter = values.split('>')
+		return posBefore, posAfter
+	
+	return labelWriter, unpackTags, unpackValues
+
+def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict):
+	openedFile = io.open(outputdir + ".model" + str(numChild), "w", encoding='utf-8')
+	labelWriter, unpackTags, unpackValues = writerFormatter()
+	openedFile.write('\n\n' + labelWriter(numChild) + '\n')
+	for key in fullRelationDict:
+		formattedKey = unpackTags(key)
+		subtitutionSpace = ' ' * len(formattedKey)
+		mutationDict = fullRelationDict[key]
+		for i, mutation in enumerate(mutationDict):
+			occurence = mutationDict[mutation]
+			if(i == 0):
+				openedFile.write(formattedKey + " :" + "{} -> {} : ".format(*unpackValues(mutation)) + str(occurence) + '\n')
+			else:
+				openedFile.write(subtitutionSpace + " :" + "{} -> {} : ".format(*unpackValues(mutation)) + str(occurence) + '\n')
+				# "{} -> {} : ".format(*unpackValues(mutation))
+				
+	openedFile.close()
+	
+def createIterableByMode(mode, inputdir, extension, timer):
+	if(mode == 'stanford'):
+		treeList, alignmentList = runStanfordParser(inputdir, extension)
+		print("Done for @StanfordParser, time passed %.2fs" % (time.time() - timer))
+	elif(mode == 'conll'):
+		treeList, alignmentList = runConllParser(inputdir, extension)
+		print("Done for @ConllParser, time passed %.2fs" % (time.time() - timer))
+	else:
+		raise argparse.ArgumentTypeError("Incorect mode, must be stanford|conll")
+	return treeList, alignmentList
+
 if __name__ == "__main__":
 	# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
@@ -813,7 +911,7 @@ if __name__ == "__main__":
 	parser.add_argument('-o','--outputdir', type=str, default=None, help='location of the output file')
 	parser.add_argument('-t','--tagdir', type=str, default="all_tag.txt", help='location of the tag file containing both POStag and dependency, default all_tag.txt')
 	parser.add_argument('-m','--mode', type=str, default="conll", help='parser file mode (stanford|conll), default conll')
-	parser.add_argument('-x','--output_extension', type=str, default="txt", help='output file mode (txt|arff|rule), default txt')
+	parser.add_argument('-x','--output_extension', type=str, default="txt", help='output file mode (txt|arff|rule|model), default txt')
 	parser.add_argument('-e','--embedding_word', type=str, help='embedding word file')
 	parser.add_argument('--parser_extension', type=str, default="parser", help='file extension for parser, default parser')
 	parser.add_argument('--default_word', type=str, default="*UNKNOWN*", help='key in embedding_word standing for unknown word. Only in arff mode')
@@ -821,6 +919,7 @@ if __name__ == "__main__":
 	parser.add_argument('--min_cases', type=int, default=-1, help='number of cases needed to be recorded, default -1(all), only in rule mode')
 	parser.add_argument('--string_mode', action='store_true', help='try to convert to string beforehand, only usable in txt/rule mode to reduce memory usage')
 	parser.add_argument('--split_rule', action='store_true', help='split the rule file into PAC/SIB file, rule mode only')
+	parser.add_argument('--model_size', type=int, default=1, help='the amount of models to be recorded, each correspond to the amount of children')
 	args = parser.parse_args()
 	# args.tagdir = "all_tag.txt"
 	# args.embedding_word = "data\syntacticEmbeddings\skipdep_embeddings.txt"
@@ -829,14 +928,8 @@ if __name__ == "__main__":
 		args.outputdir = args.inputdir
 	
 	timer = time.time()
-	if(args.mode == 'stanford'):
-		treeList, alignmentList = runStanfordParser(args.inputdir, args.parser_extension)
-		print("Done for @StanfordParser, time passed %.2fs" % (time.time() - timer))
-	elif(args.mode == 'conll'):
-		treeList, alignmentList = runConllParser(args.inputdir, args.parser_extension)
-		print("Done for @ConllParser, time passed %.2fs" % (time.time() - timer))
-	else:
-		raise argparse.ArgumentTypeError("Incorect mode, must be stanford|conll")
+	if(args.output_extension != 'model'):
+		treeList, alignmentList = createIterableByMode(args.mode, args.inputdir, args.parser_extension, timer)
 	
 	if(args.output_extension == 'txt'):
 		allExamples = createWritingData(treeList, alignmentList, args.string_mode)
@@ -868,6 +961,16 @@ if __name__ == "__main__":
 		print("Done for @createRelationData, time passed %.2fs" % (time.time() - timer))
 		writeAllRelationToFile(allRelation, args.outputdir, args.split_rule)
 		print("Done for @writeAllRelationToFile, time passed %.2fs" % (time.time() - timer))
+	elif(args.output_extension == 'model'):
+		# Handle the creation of iterables by self
+		for i in range(1, args.model_size + 1):
+			treeList, alignmentList = createIterableByMode(args.mode, args.inputdir, args.parser_extension, timer)
+			allRelation = createRelationDataByModelType(i, treeList, alignmentList)
+			# allRelation = dict((k, v) for k, v in allRelation.items() if v[1] >= args.min_cases)
+			print("Done for @createRelationDataByModelType(model child=%d), time passed %.2fs" % (i, time.time() - timer))
+			writeAllModelRelationToFile(i, args.outputdir, allRelation)
+			del allRelation
+			print("Done for @writeAllModelRelationToFile(model child=%d), time passed %.2fs" % (i, time.time() - timer))
 	else:
-		raise argparse.ArgumentTypeError("Incorect output_extension, must be txt|arff|rule")
+		raise argparse.ArgumentTypeError("Incorect output_extension, must be txt|arff|rule|model")
 	# Execute script
