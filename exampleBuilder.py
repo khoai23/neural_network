@@ -812,14 +812,16 @@ def createFormatModel(numChild, separator):
 	modelString = separator.join(modelString)
 	# print("modelString: " + modelString)
 	
-	def modelFunction(formatString, node):
+	def modelFunction(formatString, node, listChild=None):
+		listChild = listChild or node.children
 		#allTags = [node.tag] + [child.tag for child in node.children] + [child.dependency for child in node.children]
-		allTags = [node.tag] + [f(child) for child in node.children for f in (lambda x: x.tag, lambda x:x.dependency)]
-		assert len(allTags) == numTags, "allTags: {}, numTags {}".format(allTags, numTags)
+		allTags = [node.tag] + [f(child) for child in listChild for f in (lambda x: x.tag, lambda x:x.dependency)]
+		assert len(allTags) == numTags, "allTags: {} != numTags {}".format(allTags, numTags)
 		return formatString.format(*allTags)
 		
-	def modelValue(node, alignment):
-		norminal_positioned = [node] + node.children
+	def modelValue(node, alignment, listChild=None):
+		listChild = listChild or node.children
+		norminal_positioned = [node] + listChild
 		old_positioned = sorted(norminal_positioned, key=lambda x: x.pos)
 		align_positioned = sorted(norminal_positioned, key=lambda x: alignment[x.pos] if(x.pos in alignment) else x.pos)
 		
@@ -829,29 +831,46 @@ def createFormatModel(numChild, separator):
 	
 	return modelString, modelFunction, modelValue
 	
-def addTreeRelationByModelType(numChild, tree, alignmentDict, fullRelationDict, separator = '_'):
+def splitChildrenByPunctuation(children):
+	if(any(x.isPunctuation() for x in children) and len(children) > 1):
+		punct_indexes = [i for i,x in enumerate(children) if x.isPunctuation()]
+		if(0 not in punct_indexes):
+			punct_indexes = [-1] + punct_indexes
+		# Create slicing range based on the indexes of the punctuation, excluding these punctuations themselves
+		punct_slicing = [(punct_indexes[i]+1, punct_indexes[i+1] if i+1<len(punct_indexes) else len(children)) for i in range(len(punct_indexes))]
+		splitted_list = [children[start:end] for start, end in punct_slicing if start < end]
+		return splitted_list
+	else:
+		return [children]
+
+def addTreeRelationByModelType(numChild, tree, alignmentDict, fullRelationDict, splitByPunctuation=False, separator = '_'):
 	modelString, modelKeyFunction, modelValue= createFormatModel(numChild, separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
 	def tryAddingAllForMode(node):
-		if(len(node.children) == numChild):
-			# key = formatPAC % (node.tag, child.dependency, getDistance(child))
-			key =  modelKeyFunction(modelString, node)
-			posKey = modelValue(node, alignmentDict)
-			recorder = fullRelationDict.get(key, {})
-			fullRelationDict[key] = recorder
-			recorder[posKey] = recorder.get(posKey, 0) + 1
+		if(splitByPunctuation):
+			listChildGroup = splitChildrenByPunctuation(node.children)
+		else:
+			listChildGroup = [node.children]
+		for listChild in listChildGroup:
+			if(len(listChild) == numChild):
+				# key = formatPAC % (node.tag, child.dependency, getDistance(child))
+				key =  modelKeyFunction(modelString, node, listChild)
+				posKey = modelValue(node, alignmentDict, listChild)
+				recorder = fullRelationDict.get(key, {})
+				fullRelationDict[key] = recorder
+				recorder[posKey] = recorder.get(posKey, 0) + 1
 	
 	recursiveRun(tryAddingAllForMode, tree)
 	
 	return fullRelationDict
 	
-def createRelationDataByModelType(numChild, treeList, alignmentList):
+def createRelationDataByModelType(numChild, treeList, alignmentList, splitByPunctuation=False):
 	allRelationDict = {}
 	
 	for caseIdx in range(len(alignmentList)):
 		tree = next(treeList)
 		# tree = treeList[caseIdx]
 		alignment = alignmentList[caseIdx]
-		allRelationDict = addTreeRelationByModelType(numChild, tree, alignment, allRelationDict)
+		allRelationDict = addTreeRelationByModelType(numChild, tree, alignment, allRelationDict, splitByPunctuation=splitByPunctuation)
 		deleteTree(tree)
 	
 	return allRelationDict
@@ -875,7 +894,7 @@ def writerFormatter(separator='_'):
 	
 	return labelWriter, unpackTags, unpackValues
 
-def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict):
+def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict, writePercentage=False):
 	openedFile = io.open(outputdir + ".model" + str(numChild), "w", encoding='utf-8')
 	labelWriter, unpackTags, unpackValues = writerFormatter()
 	openedFile.write('\n\n' + labelWriter(numChild) + '\n')
@@ -883,14 +902,35 @@ def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict):
 		formattedKey = unpackTags(key)
 		subtitutionSpace = ' ' * len(formattedKey)
 		mutationDict = fullRelationDict[key]
+		writeIntoFile = ""
+		if(writePercentage):
+			# Record the overall values and respective case (from/to) in a dict
+			totalDict = {}, {}
+			totalAppearance = 0
+			for mutation in mutationDict:
+				occurence = mutationDict[mutation]
+				startKey, endKey = unpackValues(mutation)
+				totalDict[0][startKey] = totalDict[0].get(startKey, 0) + occurence
+				totalDict[1][endKey] = totalDict[1].get(endKey, 0) + occurence
+				totalAppearance += occurence
+			totalDict = totalDict[0], totalDict[1], float(totalAppearance)
+#			print(totalDict)
+		else:
+			totalDict = None
 		for i, mutation in enumerate(mutationDict):
 			occurence = mutationDict[mutation]
-			if(i == 0):
-				openedFile.write(formattedKey + " :" + "{} -> {} : ".format(*unpackValues(mutation)) + str(occurence) + '\n')
-			else:
-				openedFile.write(subtitutionSpace + " :" + "{} -> {} : ".format(*unpackValues(mutation)) + str(occurence) + '\n')
+			startKey, endKey = unpackValues(mutation)
+			writeIntoFile += (formattedKey if(i==0) else subtitutionSpace) + " :" + "{} -> {} : ".format(startKey, endKey) + str(occurence)
+			if(writePercentage and totalDict is not None):
+				occurence = float(occurence)
+				startPercentage, endPercentage, totalPercentage = occurence/float(totalDict[0][startKey]), occurence/float(totalDict[1][endKey]), occurence/float(totalDict[2])
+				writeIntoFile += "\t%.2f%%(begin) %.2f%%(end) %.2f%%(total)" % (startPercentage * 100.0, endPercentage * 100.0, totalPercentage * 100.0)
+			writeIntoFile += '\n'
+#		if(totalDict): writeIntoFile += subtitutionSpace + "Total: " + str(totalDict[2])
+		openedFile.write(writeIntoFile)
 				# "{} -> {} : ".format(*unpackValues(mutation))
-				
+		if(totalDict):
+			del totalDict
 	openedFile.close()
 	
 def createIterableByMode(mode, inputdir, extension, timer):
@@ -919,6 +959,8 @@ if __name__ == "__main__":
 	parser.add_argument('--min_cases', type=int, default=-1, help='number of cases needed to be recorded, default -1(all), only in rule mode')
 	parser.add_argument('--string_mode', action='store_true', help='try to convert to string beforehand, only usable in txt/rule mode to reduce memory usage')
 	parser.add_argument('--split_rule', action='store_true', help='split the rule file into PAC/SIB file, rule mode only')
+	parser.add_argument('--split_by_punctuation', action='store_true', help='split the children in groups in punctuation, model mode only')
+	parser.add_argument('--percentage_stat', action='store_true', help='stat each recorded possibility, model mode only')
 	parser.add_argument('--model_size', type=int, default=1, help='the amount of models to be recorded, each correspond to the amount of children')
 	args = parser.parse_args()
 	# args.tagdir = "all_tag.txt"
@@ -965,10 +1007,10 @@ if __name__ == "__main__":
 		# Handle the creation of iterables by self
 		for i in range(1, args.model_size + 1):
 			treeList, alignmentList = createIterableByMode(args.mode, args.inputdir, args.parser_extension, timer)
-			allRelation = createRelationDataByModelType(i, treeList, alignmentList)
+			allRelation = createRelationDataByModelType(i, treeList, alignmentList, splitByPunctuation=args.split_by_punctuation)
 			# allRelation = dict((k, v) for k, v in allRelation.items() if v[1] >= args.min_cases)
 			print("Done for @createRelationDataByModelType(model child=%d), time passed %.2fs" % (i, time.time() - timer))
-			writeAllModelRelationToFile(i, args.outputdir, allRelation)
+			writeAllModelRelationToFile(i, args.outputdir, allRelation, writePercentage=args.percentage_stat)
 			del allRelation
 			print("Done for @writeAllModelRelationToFile(model child=%d), time passed %.2fs" % (i, time.time() - timer))
 	else:
