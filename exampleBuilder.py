@@ -890,11 +890,11 @@ def writerFormatter(separator='_'):
 	
 	def unpackValues(values):
 		posBefore, posAfter = values.split('>')
-		return posBefore, posAfter
+		return posBefore.strip(), posAfter.strip()
 	
 	return labelWriter, unpackTags, unpackValues
 
-def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict, writePercentage=False):
+def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict, writePercentage=False, writeRule=None):
 	openedFile = io.open(outputdir + ".model" + str(numChild), "w", encoding='utf-8')
 	labelWriter, unpackTags, unpackValues = writerFormatter()
 	openedFile.write('\n\n' + labelWriter(numChild) + '\n')
@@ -903,18 +903,31 @@ def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict, writePerc
 		subtitutionSpace = ' ' * len(formattedKey)
 		mutationDict = fullRelationDict[key]
 		writeIntoFile = ""
-		if(writePercentage):
+		if(writePercentage or writeRule):
 			# Record the overall values and respective case (from/to) in a dict
 			totalDict = {}, {}
 			totalAppearance = 0
+			if(writeRule):
+				maxRecorder = {}
 			for mutation in mutationDict:
 				occurence = mutationDict[mutation]
 				startKey, endKey = unpackValues(mutation)
 				totalDict[0][startKey] = totalDict[0].get(startKey, 0) + occurence
 				totalDict[1][endKey] = totalDict[1].get(endKey, 0) + occurence
+				if(writeRule):
+					# Check and keep the largest endKey for its startKey
+					if(maxRecorder.get(startKey, (0, ""))[0] < occurence):
+						maxRecorder[startKey] = (occurence, endKey)
 				totalAppearance += occurence
 			totalDict = totalDict[0], totalDict[1], float(totalAppearance)
-#			print(totalDict)
+			if(writeRule):
+				for startKey in maxRecorder:
+					highestVal, highestEndKey = maxRecorder[startKey]
+					totalOccurence = totalDict[0][startKey]
+					if(float(highestVal) / float(totalOccurence) >= writeRule and startKey != highestEndKey):
+						openedFile.write(formattedKey + " {}-{} {}/{}".format(startKey, endKey, highestVal, totalOccurence) + '\n')
+				# skip the lower write in this mode
+				continue
 		else:
 			totalDict = None
 		for i, mutation in enumerate(mutationDict):
@@ -962,6 +975,7 @@ if __name__ == "__main__":
 	parser.add_argument('--split_by_punctuation', action='store_true', help='split the children in groups in punctuation, model mode only')
 	parser.add_argument('--percentage_stat', action='store_true', help='stat each recorded possibility, model mode only')
 	parser.add_argument('--model_size', type=int, default=1, help='the amount of models to be recorded, each correspond to the amount of children')
+	parser.add_argument('--model_rule_threshold', type=float, default=None, help='If specified, model(n) files will only display the highest non-duplicate swap rules above such threshold.')
 	args = parser.parse_args()
 	# args.tagdir = "all_tag.txt"
 	# args.embedding_word = "data\syntacticEmbeddings\skipdep_embeddings.txt"
@@ -1010,7 +1024,7 @@ if __name__ == "__main__":
 			allRelation = createRelationDataByModelType(i, treeList, alignmentList, splitByPunctuation=args.split_by_punctuation)
 			# allRelation = dict((k, v) for k, v in allRelation.items() if v[1] >= args.min_cases)
 			print("Done for @createRelationDataByModelType(model child=%d), time passed %.2fs" % (i, time.time() - timer))
-			writeAllModelRelationToFile(i, args.outputdir, allRelation, writePercentage=args.percentage_stat)
+			writeAllModelRelationToFile(i, args.outputdir, allRelation, writePercentage=args.percentage_stat, writeRule=args.model_rule_threshold)
 			del allRelation
 			print("Done for @writeAllModelRelationToFile(model child=%d), time passed %.2fs" % (i, time.time() - timer))
 	else:
