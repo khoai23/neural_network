@@ -5,22 +5,32 @@ from exampleBuilder import *
 import numpy as np
 from collections import OrderedDict
 
+far_left_token, close_left_token, close_right_token, far_right_token = ['<fl>', '<cl>', '<cr>', '<fr>']
+start_token, end_token = ['<s>', '<\s>']
+capitalize_token = '<cap>'
+
 conllRegex = re.compile("(\d+)\t(.+)\t_\t([\w$\.,:\"\'-]+)\t([\w$\.,:\"\'-]+)\t_\t(\d+)\t(\w+)")
 WORD_WINDOW = 2
 def tagChangeFunc(tag):
 	return tag + '_<CH>'
 
-def parseSentencesFromLines(lines, appendToken=False, lowercase=False):
+def checkCapitalize(word):
+	return word[0].isupper() and (len(word) == 0 or not word.isupper())
+
+def parseSentencesFromLines(lines, appendToken=False, lowercase=False, decapitalize=False):
 	if(not lowercase):
 		sentences = (line.strip().split(' ') for line in lines if(line.strip() != ""))
 	else:
 		sentences = (line.strip().lower().split(' ') for line in lines if(line.strip() != ""))
+	if(decapitalize):
+		capFunc = lambda word: [capitalize_token, word.lower()] if checkCapitalize(word) else [word]
+		convertSentenceFunc = lambda sentence: [item for word in sentence for item in capFunc(word)]
+		sentence = (convertSentenceFunc(sentence) for sentence in sentences)
 	if(appendToken):
 		startToken, endToken, window = appendToken
 		startToken = [startToken] * window
 		endToken = [endToken] * window
-		def modifySentence(sentence):
-			return startToken + sentence + endToken
+		modifySentence = lambda sentence: startToken + sentence + endToken
 		return (modifySentence(sentence) for sentence in sentences)
 	else:
 		return sentences
@@ -88,7 +98,22 @@ def createFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wordWindow=
 			context = [lookupDict.get(sentence[i+x], 0) for x in range(-wordWindow, wordWindow+1) if x!=0]
 			feed.append((context, lookupDict.get(sentence[i], 0)))
 	return feed
-	
+
+def createExtendedFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wordWindow=WORD_WINDOW):
+	# do not use cbow since extended is locked in skipgram - 1
+	feed = []
+	fl, cl, cr, fr = lookupDict[far_left_token], lookupDict[close_left_token], lookupDict[close_right_token], lookupDict[far_right_token]
+	for i in range(len(sentence)):
+		for x in range(1, wordWindow+1):
+			if((i+x) < len(sentence)):
+				leftWord, rightWord = sentence[i], sentence[i+x]
+				leftId, rightId = lookupDict.get(leftWord, 0), lookupDict.get(rightWord, 0)
+				disLeft, disRight = (fl, fr) if x > 1 else (cl, cr)
+				# Our model try to predict the words coming before-after directly
+				feed.append(([leftId, disRight], rightId))
+				feed.append(([rightId, disLeft], leftId))
+	return feed
+
 def getBatchFromFeedData(batchSize, feed, addRelationFunc, cbowMode=False):
 	# Only get a batch of specified size, add more relation 
 	while(len(feed) < batchSize):
@@ -142,27 +167,27 @@ def generateDictionaryFromParser(lines, regex, regexGroupIdx, useMatch=True):
 	
 	return dict
 	
-def generateDictionaryFromLines(lines, lowercase=False):
+def generateDictionaryFromLines(lines, lowercase=False, decapitalize=False):
 	dict = {}
 	for line in lines:
 		if(lowercase):
 			line = line.lower()
 		words = line.strip().split()
 		for word in words:
+			if(checkCapitalize(word)):
+				word = word.lower()
+				dict[capitalize_token] = dict.get(capitalize_token, 0) + 1
 			dict[word] = dict.get(word, 0) + 1
 	return dict
 	
-def organizeDict(wordCountDict, tagDict, dictSize, unknownWord="*UNKNOWN*"):
+def organizeDict(wordCountDict, tagDict, dictSize, extraWords=["*UNKNOWN*"]):
 	# Dict will be sorted from highest to lowest appearance
 	if(dictSize == -2):
 		# Obscure mode, remove all items that only show up once
 		wordCountDict = {k: v for k, v in wordCountDict.items() if v <= 1}
 	listWords = [w for w,c in sorted(wordCountDict.items(), key=lambda item: item[1], reverse=True)]
 	listWords = listWords[:dictSize-1] if(dictSize > 0) else listWords
-	if(isinstance(unknownWord, str)):
-		listWords.insert(0, unknownWord)
-	else:
-		listWords = unknownWord + listWords
+	listWords = extraWords + listWords
 	for key in tagDict:
 		listWords.append(tagChangeFunc(key))
 	# create two dictionary for reference
@@ -175,7 +200,47 @@ def organizeDict(wordCountDict, tagDict, dictSize, unknownWord="*UNKNOWN*"):
 	
 	return len(listWords), wordDict, refDict
 
-def createEmbedding(fileAndMode, tagDict, dictSize, embeddingSize, batchSize, extraWords):
+def createEmbedding(parseMode, embMode, fileIn, sizeTuple, extraWords=[], tagDict=None, properCBOW=True, lowercase=False, decapitalize=False):
+	dictSize, windowSize, embeddingSize, batchSize = sizeTuple
+	# Destroy any current graph and session
+	tf.reset_default_graph()
+	session = tf.get_default_session()
+	if(session is not None):
+		session.close()
+	
+	fileIn.seek(0)
+	# Generate frequency dictionary, depending on the input file is a normal one (normal/extended) vs conll one (dependency)
+	if(parseMode == 'normal' or parseMode == 'extended'):
+		allWordDict = generateDictionaryFromLines(fileIn.readlines(), lowercase=lowercase, decapitalize=decapitalize)
+	else:
+		allWordDict = generateDictionaryFromParser(fileIn.readlines(), conllRegex, 2)
+	print("All words found: {}".format(len(allWordDict)))
+	dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords=extraWords)
+	
+	# Create a session based on the actual dictSize (plus unknownWord and tags and maybe start/stop sentence token)
+	# Session will only accept this batch size from then on
+	if(parseMode == 'extended'):
+		embeddingInputSize = 2
+	elif(embMode == 'cbow'):
+		# input the size of window
+		embeddingInputSize = wordWindow * 2
+	else:
+		embeddingInputSize = 1
+	# extended must use cbow scheme to support its closeleft-left-closeright-right tokens despite being skipgram
+	if((parseMode == 'extended' or embMode == 'cbow') and properCBOW):
+		sessionTuple = createEmbeddingSessionCBOW(dictSize, embeddingSize, embeddingInputSize, batchSize)
+	else:
+		sessionTuple = createEmbeddingSession(dictSize, embeddingSize, embeddingInputSize, batchSize)
+	
+	dictTuple = dictSize, wordDict, refDict, tagDict
+	
+	session = sessionTuple[0]
+	session.run(tf.global_variables_initializer())
+	# print(np.array2string(sessionTuple[4][0].eval(session=session)))
+	
+	return sessionTuple, dictTuple
+
+def createEmbeddingObsolete(fileAndMode, tagDict, dictSize, embeddingSize, batchSize, extraWords):
 	file, isNormal, isCBOW, windowSize, properCBOW, lowercase = fileAndMode
 	# Destroy any current graph and session
 	tf.reset_default_graph()
@@ -187,12 +252,10 @@ def createEmbedding(fileAndMode, tagDict, dictSize, embeddingSize, batchSize, ex
 	# Generate frequency dictionary
 	if(isNormal):
 		allWordDict = generateDictionaryFromLines(file.readlines(), lowercase)
-		print("All words found: {}".format(len(allWordDict)))
-		dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords)
 	else:
 		allWordDict = generateDictionaryFromParser(file.readlines(), conllRegex, 2)
-		print("All words found: {}".format(len(allWordDict)))
-		dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords)
+	print("All words found: {}".format(len(allWordDict)))
+	dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords=extraWords)
 	
 	# Create a session based on the actual dictSize (plus unknownWord and tags and maybe start/stop sentence token)
 	# Session will only accept this batch size from then on
@@ -214,7 +277,62 @@ def createEmbedding(fileAndMode, tagDict, dictSize, embeddingSize, batchSize, ex
 	
 	return sessionTuple, dictTuple
 
-def trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData=None, timerFunc=None):
+def generateTrainingData(parseMode, embMode, fileIn, wordDict, batchSize, cbowGrandparent=False, lowercase=False, decapitalize=False):
+	fileIn.seek(0)
+	cbowMode = (embMode == 'cbow')
+	if(parseMode == 'dependency'):
+		dataBlock = getDataBlock(file.readlines(), blankLineRegex)
+		dataBlock.pop(0)
+		
+	# generator function from this block to avoid memory overflow
+		def getFeed():
+			if(len(dataBlock) <= 0):
+				return None
+			block = dataBlock.pop()
+			tree = constructTreeFromBlock(block, conllRegex)
+			del block
+			return createFeedData(tree, wordDict, (cbowMode, cbowGrandparent))
+	elif(parseMode == 'normal' or parseMode == 'extended'):
+		sentenceToDataFunc = createFeedDataFromSentence if parseMode == 'normal' else createExtendedFeedDataFromSentence
+		sentences = parseSentencesFromLines(file.readlines(), (start_token, end_token, wordWindow) if cbowMode else False, lowercase, decapitalize=decapitalize)
+		def getFeed():
+			try:
+				sentence = next(sentences)
+			except StopIteration:
+				return None
+			return sentenceToDataFunc(sentence, wordDict, cbowMode, wordWindow)
+#			return createFeedDataFromSentence(sentence, wordDict, cbowMode, wordWindow)
+	else:
+		raise Exception("Invalid parseMode: {:s}".format(parseMode))
+
+	# if extended, force the cbowMode variable since it is formatted as cbow and we don't want the mirror to happen
+	cbowMode = cbowMode or parseMode == 'extended'
+	# initialize
+	feed = getFeed()
+	batch = getBatchFromFeedData(batchSize, feed, getFeed, cbowMode)
+	# loop until no more feed/batch can be generated
+	workingBatches = []
+	while(batch is not None):
+		workingBatches.append(batch)
+		batch = getBatchFromFeedData(batchSize, feed, getFeed, cbowMode)
+	
+	return workingBatches
+
+def trainEmbedding(createdData, sessionTuple, epoch, timerFunc=None, timerInterval=1000, passedSteps=0):
+	session, train_op, training_inputs, training_outputs, resultTuple = sessionTuple
+	for i in range(1, epoch+1):
+		total_loss = 0.0
+		for inputBatch, outputBatch in createdData:
+			_, loss = session.run(fetches=train_op, feed_dict={training_inputs:inputBatch, training_outputs:outputBatch})
+			passedSteps += 1
+			total_loss += loss
+			if(passedSteps % timerInterval == 0 and timerFunc is not None):
+				print("Steps {:d}; time passed {:.2f}s, last loss {:.4f}.".format(passedSteps, timerFunc(None), loss))
+		currentTime = timerFunc(i)
+		print("Epoch {:d} completed, time passed {:.2f}s, total loss in total / per batch: {:.5f} / {:.5f}".format(i, currentTime, total_loss, total_loss / float(len(createdData))))
+	return passedSteps
+
+def trainEmbeddingObsolete(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData=None, timerFunc=None):
 	# If in first iteration, disregard the epoch counter
 	embeddingMode = fileAndMode[0]
 	session, train_op, training_inputs, training_outputs, resultTuple = sessionTuple
@@ -277,7 +395,7 @@ def trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, saved
 		if(savedTrainData == None or savedTrainData == True):
 			savedBatches = []
 			file.seek(0)
-			sentences = parseSentencesFromLines(file.readlines(), (startToken, endToken, wordWindow) if cbowMode else False, lowercase)
+			sentences = parseSentencesFromLines(file.readlines(), (start_token, end_token, wordWindow) if cbowMode else False, lowercase=lowercase, decapitalize=decapitalize)
 			
 			# generator function for getBatch
 			def getFeedFromSentence():
@@ -317,16 +435,16 @@ def trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, saved
 def evaluateSimilarity(divResult):
 	return 1 - np.tanh(np.abs(np.log(divResult)))
 
-def evaluateEmbedding(sessionTuple, combinedDict, sampleSize, sampleWordWindow, checkSize):
+def evaluateEmbedding(sessionTuple, combinedDict, sampleSize, sampleWordWindow, checkSize, sample=None):
 	refDict = combinedDict[2]
 	# Taken straight from the basic word2vec
 	# use numpy instead of tf.matmul
 	session=sessionTuple[0]
 	
 	# sampleSize samples in range of 0-wordWindow, no duplication
-	# random_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False)
-	const_phr = ['gia_đình','ngành', 'triệu', 'điều']
-	random_sample = [combinedDict[1][phr] for phr in const_phr]
+	random_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False) if sample is None else sample
+#	const_phr = ['gia_đình','ngành', 'triệu', 'điều']
+#	random_sample = [combinedDict[1][phr] for phr in const_phr]
 	sampleSize = len(random_sample)
 	
 	# get the un-normalized version and check for closest values
@@ -429,35 +547,31 @@ def writeListWordsToFile(fileOrFileDir, wordDict):
 		file.write(word + '\n')
 	file.close()
 	
-def modeStringToTuple(str):
-	# mode is basically (isNormal, isCBOW) tuple
-	str = str.split('_')
-	if(str[0] == 'dependency'):
-		isNormal = False
-	elif(str[0] == 'normal'):
-		isNormal = True
+def modeStringParse(string):
+	# mode is basically (isNormal, isCBOW, windowsize) tuple here
+	string = string.lower().split('_')
+	if(any(string[0] == item for item in ['normal', 'dependency', 'extended'])):
+		isNormal = (string[0] == 'normal')
 	else:
-		raise argparse.ArgumentTypeError('Arg2 must be skipgram/cbow')
+		raise argparse.ArgumentTypeError('Arg1 must be dependency/normal')
 	
-	if(str[1] == 'skipgram'):
-		isCBOW = False
-	elif(str[1] == 'cbow'):
-		isCBOW = True
+	if(any(string[1] == item for item in ['skipgram', 'cbow'])):
+		isCBOW = (string[1] == 'cbow')
 	else:
 		raise argparse.ArgumentTypeError('Arg2 must be skipgram/cbow')
 	
 	try:
-		windowSize = int(str[3])
+		windowSize = int(string[2])
 	except Exception as e:
-		print("Error getting windowSize (%s), default to %d" % (e, WORD_WINDOW))
+		print("Error getting windowSize from {:s}, default to {:d}".format(e, WORD_WINDOW))
 		windowSize = WORD_WINDOW
-	return isNormal, isCBOW, windowSize
+	return isNormal, isCBOW, windowSize, string
 	
 if __name__ == "__main__":
 	# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
 	parser.add_argument('-i','--inputdir', type=str, default=None, required=True, help='location of the input files')
-	parser.add_argument('-m', '--mode', type=modeStringToTuple, required=True, help='the mode to embed the word2vec in, must be in format (dependency|normal)_(skipgram|cbow)_wordWindow(only if in normal mode)')
+	parser.add_argument('-m', '--mode', type=modeStringParse, required=True, help='the mode to embed the word2vec in, must be in format (dependency|normal|extended)_(skipgram|cbow)_wordWindow(only if in normal mode)')
 	parser.add_argument('-x', '--export_mode', required=True, type=str, help='exporting the values to an outside file, must be (all|both|default|normalized|binary|binary_full|vocab)')
 	parser.add_argument('-o','--outputdir', type=str, default=None, help='location of the output file')
 	parser.add_argument('-t','--tagdir', type=str, default="all_tag.txt", help='location of the tag file containing both POStag and dependency, default all_tag.txt')
@@ -472,8 +586,9 @@ if __name__ == "__main__":
 	parser.add_argument('--filter_tag', action='store_true', help='remove the trained tag from the output file')
 	parser.add_argument('--grandparent', action='store_true', help='use grandparent scheme, only available to dependency_cbow mode')
 	parser.add_argument('--average', action='store_false', help='use average tensor instead of fully independent tensor, only available to normal_cbow mode')
-	parser.add_argument('--timer', type=int, default=100, help='the inteval to call timer func')
+	parser.add_argument('--timer', type=int, default=1000, help='the inteval to call timer func')
 	parser.add_argument('--lowercase', action='store_true', help='do the lowercase by the default python function. Not recommended.')
+	parser.add_argument('--decapitalize', action='store_true', help='create a <cap> token before capitalized words')
 	parser.add_argument('--other_mode', action='store_true', help='placeholder')
 	args = parser.parse_args()
 	
@@ -492,7 +607,8 @@ if __name__ == "__main__":
 	sampleSize = 8
 	sampleWordWindow = 200
 	checkSize = 10
-	isNormal, isCBOW, wordWindow = args.mode
+	isNormal, isCBOW, wordWindow, modeString = args.mode
+	parseMode, embMode, _ = modeString
 	
 	timer = time.time()
 	
@@ -500,38 +616,49 @@ if __name__ == "__main__":
 	tagDict = getTagFromFile(args.tagdir, True)
 	# Exit prematurely with vocab export
 	if(args.export_mode == 'vocab'):
-		allWordDict = generateDictionaryFromLines(file.readlines(), args.lowercase)
+		allWordDict = generateDictionaryFromLines(file.readlines(), lowercase=args.lowercase, capitalize=args.decapitalize)
 		writeListWordsToFile(args.outputdir + '.' + args.output_extension, allWordDict)
 		print("Done for vocab export, time passed %.2fs" % (time.time() - timer))
 		sys.exit(0)
 	# Initialize the embedding
-	sessionTuple, dictTuple = createEmbedding((file, isNormal, isCBOW, wordWindow, args.average, args.lowercase), tagDict, dictSize, embeddingSize, batchSize, \
-												unknownWord if(not isNormal) else [unknownWord, '<s>', '<\s>'])
+	# Todo add the inverse mode
+	if(parseMode == 'normal'):
+		# add the sos and eos token as well
+		extraWords = [unknownWord, start_token, end_token]
+	elif(parseMode == 'extended'):
+		# add far left - close left - close right - far right
+		extraWords = [unknownWord, far_left_token, close_left_token, close_right_token, far_right_token]
+	else: #elif(parseMode == 'dependency'):
+		# add only the unknownWord
+		extraWords = [unknownWord]
+	sessionTuple, dictTuple = createEmbedding(parseMode, embMode, file, (dictSize, wordWindow, embeddingSize, batchSize), tagDict=tagDict, properCBOW=args.average, extraWords=extraWords, lowercase=args.lowercase, decapitalize=args.decapitalize)
+#	sessionTuple, dictTuple = createEmbedding((file, isNormal, isCBOW, wordWindow, args.average, args.lowercase), tagDict, dictSize, embeddingSize, batchSize, unknownWord if(not isNormal) else [unknownWord, '<s>', '<\s>'])
 	print("Done for @createEmbedding, time passed %.2fs" % (time.time() - timer))
 	
+	# create the static sample for evaluation
+	static_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False)
 	# Train and evaluate the embedding
-	if(isNormal):
-		if(isCBOW):
-			fileAndMode = 'normal', file, isCBOW, '<s>', '<\s>', wordWindow, args.lowercase
-		else:
-			fileAndMode = 'normal', file, isCBOW, wordWindow, args.lowercase
-	else:
-		fileAndMode = 'dependency', file, isCBOW, args.grandparent
 	def timerFunc(counter=None):
 		if(args.evaluate > 0 and counter is not None):
 			if(counter % args.evaluate == 0):
-				evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
+				evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize, sample=static_sample)
 		return time.time() - timer
 		
-	savedTrainData = trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, 1, True)
-	print("Done generating @trainEmbedding (first iteration), data included %d batches(size %d), time passed %.2fs" % (len(savedTrainData), batchSize, time.time() - timer))
-	trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData, timerFunc)
-	print("Done full training by @trainEmbedding (%d iteration), time passed %.2fs" % (epoch, time.time() - timer))
+	wordDict = dictTuple[1]
+	generatedTrainData = generateTrainingData(parseMode, embMode, file, wordDict, batchSize, cbowGrandparent=args.grandparent, lowercase=args.lowercase)
+	print("Done generating training data, time passed {:.2f}s, generated batch of size {:d}".format(time.time() - timer, len(generatedTrainData)))
+	
+	totalSteps = trainEmbedding(generatedTrainData, sessionTuple, epoch, timerFunc=timerFunc, timerInterval=args.timer)
+	print("All training complete @trainEmbedding, total steps {:d}, time passed {:.2f}s".format(totalSteps, time.time() - timer))
+#	savedTrainData = trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, 1, True)
+#	print("Done generating @trainEmbedding (first iteration), data included %d batches(size %d), time passed %.2fs" % (len(savedTrainData), batchSize, time.time() - timer))
+#	trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData, timerFunc)
+#	print("Done full training by @trainEmbedding (%d iteration), time passed %.2fs" % (epoch, time.time() - timer))
 	
 	# Final evaluation
 	if(args.evaluate >= 0):
 		resultTuple = evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
-		print("Final @evaluateEmbedding, time passed %.2fs" % (time.time() - timer))
+		print("Final @evaluateEmbedding on random sample, time passed %.2fs" % (time.time() - timer))
 	
 	dictSize = dictTuple[0]
 	embeddingCountAndSize = "{} {}\n".format(dictSize, embeddingSize)
