@@ -174,7 +174,7 @@ def generateDictionaryFromLines(lines, lowercase=False, decapitalize=False):
 			line = line.lower()
 		words = line.strip().split()
 		for word in words:
-			if(checkCapitalize(word)):
+			if(decapitalize and checkCapitalize(word)):
 				word = word.lower()
 				dict[capitalize_token] = dict.get(capitalize_token, 0) + 1
 			dict[word] = dict.get(word, 0) + 1
@@ -182,9 +182,11 @@ def generateDictionaryFromLines(lines, lowercase=False, decapitalize=False):
 	
 def organizeDict(wordCountDict, tagDict, dictSize, extraWords=["*UNKNOWN*"]):
 	# Dict will be sorted from highest to lowest appearance
-	if(dictSize == -2):
-		# Obscure mode, remove all items that only show up once
-		wordCountDict = {k: v for k, v in wordCountDict.items() if v <= 1}
+	if(dictSize < 0):
+		# Obscure mode, remove all items that show up less than |threshold|
+		threshold = abs(dictSize)
+		wordCountDict = {k: v for k, v in wordCountDict.items() if v > threshold}
+		print("Found {:d} words that fit the criteria: appeared more than {:d} times".format(len(wordCountDict), threshold))
 	listWords = [w for w,c in sorted(wordCountDict.items(), key=lambda item: item[1], reverse=True)]
 	listWords = listWords[:dictSize-1] if(dictSize > 0) else listWords
 	listWords = extraWords + listWords
@@ -435,6 +437,40 @@ def trainEmbeddingObsolete(fileAndMode, sessionTuple, dictTuple, batchSize, epoc
 def evaluateSimilarity(divResult):
 	return 1 - np.tanh(np.abs(np.log(divResult)))
 
+def findSimilarity(tupleMatrix, refDict, sample, mode=3):
+	embeddingMatrix, normalizedMatrix = tupleMatrix
+	sampleMatrix = np.transpose([normalizedMatrix[i] for i in sample])
+	sampleSize = len(sample)
+	# print([[i for i in vector] for vector in sampleMatrix])
+	# print(embeddingMatrix.shape, vectorLength.shape)
+	# calculate distance for normalized version
+	if(mode == 2 or mode == 3):
+		distance = np.transpose(np.matmul(normalizedMatrix, sampleMatrix))
+		print("Check normalized version:")
+		for idx in range(sampleSize):
+			word = refDict[sample[idx]]
+			nearest = (-distance[idx, :])
+			# print(nearest)
+			nearest = nearest.argsort()[:checkSize + 1]
+			nearest = [refDict[x] for x in nearest]
+			print("{} -> {}".format(word, nearest))
+	
+	if(mode == 1 or mode == 3):
+		vectorLength = np.linalg.norm(embeddingMatrix, axis=1)
+		magDifference = np.asarray([vectorLength / vectorLength[sample] for sample in sample])
+		magDifference = 1 - np.tanh(np.abs(np.log(magDifference)))
+		# multiply the normalized part with the difference of magnitude converted into 0-1 range (1 is the same, 0 is infinitively different)
+		print("Check normal version:")
+		#print(distance.shape, magDifference.shape)
+		distance = np.multiply(magDifference, distance)
+		for idx in range(sampleSize):
+			word = refDict[sample[idx]]
+			nearest = -distance[idx]
+			nearest = nearest.argsort()[:checkSize + 1]
+			nearest = [refDict[x] for x in nearest]
+			print("{} -> {}".format(word, nearest))
+	
+
 def evaluateEmbedding(sessionTuple, combinedDict, sampleSize, sampleWordWindow, checkSize, sample=None):
 	refDict = combinedDict[2]
 	# Taken straight from the basic word2vec
@@ -445,43 +481,31 @@ def evaluateEmbedding(sessionTuple, combinedDict, sampleSize, sampleWordWindow, 
 	random_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False) if sample is None else sample
 #	const_phr = ['gia_đình','ngành', 'triệu', 'điều']
 #	random_sample = [combinedDict[1][phr] for phr in const_phr]
-	sampleSize = len(random_sample)
 	
 	# get the un-normalized version and check for closest values
 	_, _, _, _, resultTuple = sessionTuple
 	embeddingMatrix = resultTuple[0].eval(session=session)
 	normalizedMatrix = resultTuple[1].eval(session=session)
 	# print(np.array2string(normalizedMatrix[2:6]))
-	sampleMatrix = np.transpose([normalizedMatrix[i] for i in random_sample])
-	# print([[i for i in vector] for vector in sampleMatrix])
-	
-	# print(embeddingMatrix.shape, vectorLength.shape)
-	# calculate distance for normalized version
-	distance = np.transpose(np.matmul(normalizedMatrix, sampleMatrix))
-	print("Check normalized version:")
-	for idx in range(sampleSize):
-		word = refDict[random_sample[idx]]
-		nearest = (-distance[idx, :])
-		# print(nearest)
-		nearest = nearest.argsort()[:checkSize + 1]
-		nearest = [refDict[x] for x in nearest]
-		print("{} -> {}".format(word, nearest))
-	
-	vectorLength = np.linalg.norm(embeddingMatrix, axis=1)
-	magDifference = np.asarray([vectorLength / vectorLength[sample] for sample in random_sample])
-	magDifference = 1 - np.tanh(np.abs(np.log(magDifference)))
-	# multiply the normalized part with the difference of magnitude converted into 0-1 range (1 is the same, 0 is infinitively different)
-	print("Check normal version:")
-	#print(distance.shape, magDifference.shape)
-	distance = np.multiply(magDifference, distance)
-	for idx in range(sampleSize):
-		word = refDict[random_sample[idx]]
-		nearest = -distance[idx]
-		nearest = nearest.argsort()[:checkSize + 1]
-		nearest = [refDict[x] for x in nearest]
-		print("{} -> {}".format(word, nearest))
-	
+	findSimilarity((embeddingMatrix, normalizedMatrix), refDict, random_sample)
+
 	return embeddingMatrix, normalizedMatrix
+
+def findAndPrintNearest(tupleMatrix, combinedDict, wordList, mode=3):
+	wordDict = combinedDict[1]
+	refDict = combinedDict[2]
+	
+	# convert wordList(word) to sample(ids)
+	sample = []
+	for word in wordList:
+		if(word in wordDict):
+			sample.append(wordDict[word])
+		else:
+			print("Word {} not found in dictionary.".format(word))
+	if(len(sample) == 0):
+		print("No acceptable words, exit @findAndPrintNearest.")
+	
+	findSimilarity(tupleMatrix, refDict, sample, mode=mode)
 
 def exportEmbedding(exportMode, outputDir, outputExt, wordDict, resultMatrixTuple, embeddingCountAndSize, tagDictForRemoval=None):
 	if(exportMode == "all" or exportMode == "both"):
@@ -553,7 +577,7 @@ def modeStringParse(string):
 	if(any(string[0] == item for item in ['normal', 'dependency', 'extended'])):
 		isNormal = (string[0] == 'normal')
 	else:
-		raise argparse.ArgumentTypeError('Arg1 must be dependency/normal')
+		raise argparse.ArgumentTypeError('Arg1 must be dependency/normal/extended')
 	
 	if(any(string[1] == item for item in ['skipgram', 'cbow'])):
 		isCBOW = (string[1] == 'cbow')
@@ -567,6 +591,55 @@ def modeStringParse(string):
 		windowSize = WORD_WINDOW
 	return isNormal, isCBOW, windowSize, string
 	
+def runTerminal(args, items=None):
+		if(not args.terminal_commands_only and items is not None):
+			resultTuple, dictTuple = items
+		elif(args.terminal_commands_only):
+			print("Warning: in terminal command only mode, you do not have data. You must load a previous dump.")
+		else:
+			raise ValueError("Items is None while not args.terminal_commands_only.")
+		print("+++ Console Interactions Ready +++")
+		helperLine = "q/quit to exit, m/mode to select comparing embedding, e/export to try export a distribution image, i/input to input a list of words for comparison, s/save and l/load to save or load the command to directory"
+		print(helperLine)
+		selectMode = 3
+		while(True):
+			lastCommand = input("Input command: ").strip()
+			if(lastCommand == 'quit' or lastCommand == 'q'):
+				break
+			elif(lastCommand == 'mode' or lastCommand == 'm'):
+				try:
+					selectMode = int(input("1 for full, 2 for normalized, 3 for both: "))
+					if(selectMode > 3 or selectMode < 0):
+						selectMode = 3
+						print("Must select from the options specified.")
+					else:
+						print("Mode(int) changed to {:d}".format(selectMode))
+				except ValueError:
+					print("Invalid value inputted, must be int")
+			elif(lastCommand == 'export' or lastCommand == 'e'):
+				print("Unimplemented, please choose another one")
+			elif(lastCommand == 'help' or lastCommand == 'h'):
+				print(helperLine)
+			elif(lastCommand == 'input' or lastCommand == 'i'):
+				wordOrWords = input("The comparing words: ").strip()
+				if(wordOrWords.find(" ") >= 0):
+					listWords = wordOrWords.split()
+				else:
+					listWords = [wordOrWords]
+				findAndPrintNearest(resultTuple, dictTuple, listWords, mode=selectMode)
+			elif(lastCommand == 'save' or lastCommand == 's'):
+				path = input("Specify the save path: ")
+				saveFile = io.open(path, "wb")
+				pickle.dump((resultTuple, dictTuple), saveFile)
+				print("Dumped the needed data @{:s}".format(path))
+			elif(lastCommand == 'load' or lastCommand == 'l'):
+				path = input("Specify the load path: ")
+				loadFile = io.open(path, "rb")
+				resultTuple, dictTuple = pickle.load(loadFile)
+				print("Loaded the needed data @{:s}".format(path))
+			else:
+				print("Invalid command, type help/h for a list of valid commands.")
+
 if __name__ == "__main__":
 	# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
@@ -581,16 +654,23 @@ if __name__ == "__main__":
 	parser.add_argument('--epoch', type=int, default=1000, help='number of iterations through the data, default 1000')
 	parser.add_argument('--batch_size', type=int, default=512, help='size of the batches to be feed into the network, default 512')
 	parser.add_argument('--embedding_size', type=int, default=100, help='size of the embedding to be created, default 100')
-	parser.add_argument('--dict_size', type=int, default=10000, help='size of the words to be embedded, default 10000, input -1 for all words, -2 for all words that show up more than once.')
-	parser.add_argument('-e','--evaluate', type=int, default=0, help='try to evaluate the validity of the trained embedding. -1 for not evaluating, 0 for evaluating at the end of the training, and positive number for the steps where you launch the evaluation')
+	parser.add_argument('--dict_size', type=int, default=10000, help='size of the words to be embedded, default 10000, input -1 for all words, -n (int) for taking only those occurred more than n times.')
+	parser.add_argument('-e','--evaluate', type=int, default=0, help='try to evaluate the validity of the trained embedding. Note that at the end of the training the evaluation function will fire regardless of this value. A positive number for the steps where you launch the evaluation')
 	parser.add_argument('--filter_tag', action='store_true', help='remove the trained tag from the output file')
 	parser.add_argument('--grandparent', action='store_true', help='use grandparent scheme, only available to dependency_cbow mode')
 	parser.add_argument('--average', action='store_false', help='use average tensor instead of fully independent tensor, only available to normal_cbow mode')
 	parser.add_argument('--timer', type=int, default=1000, help='the inteval to call timer func')
 	parser.add_argument('--lowercase', action='store_true', help='do the lowercase by the default python function. Not recommended.')
 	parser.add_argument('--decapitalize', action='store_true', help='create a <cap> token before capitalized words')
+	parser.add_argument('--terminal_commands', action='store_true', help='run a terminal after training to check on the result')
+	parser.add_argument('--terminal_commands_only', action='store_true', help='run a terminal only, doing nothing about the script itself')
 	parser.add_argument('--other_mode', action='store_true', help='placeholder')
 	args = parser.parse_args()
+	
+	# if in this mode, ignore all that came after
+	if(args.terminal_commands_only):
+		runTerminal(args)
+		sys.exit()
 	
 	if(args.outputdir is None):
 		args.outputdir = args.inputdir
@@ -655,10 +735,9 @@ if __name__ == "__main__":
 #	trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData, timerFunc)
 #	print("Done full training by @trainEmbedding (%d iteration), time passed %.2fs" % (epoch, time.time() - timer))
 	
-	# Final evaluation
-	if(args.evaluate >= 0):
-		resultTuple = evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
-		print("Final @evaluateEmbedding on random sample, time passed %.2fs" % (time.time() - timer))
+	# Final evaluation. Must run, to bring out the resultTuple
+	resultTuple = evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
+	print("Final @evaluateEmbedding on random sample, time passed %.2fs" % (time.time() - timer))
 	
 	dictSize = dictTuple[0]
 	embeddingCountAndSize = "{} {}\n".format(dictSize, embeddingSize)
@@ -667,3 +746,7 @@ if __name__ == "__main__":
 	exportEmbedding(args.export_mode, args.outputdir, args.output_extension, dictTuple[1], resultTuple, embeddingCountAndSize)
 	
 	file.close()
+
+	if(args.terminal_commands):
+		# Allow reading words from the terminal and output closest words found
+		runTerminal(args, (resultTuple, dictTuple))

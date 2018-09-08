@@ -38,6 +38,26 @@ def readModelFromFiles(modelDir, maxModelFound):
 		modelFile.close()
 	return listModels
 
+def createDepRuleDictFromFile(filePath, bracketSeparator='->', excludeTags=[]):
+	depFile = io.open(filePath, 'r', encoding='utf-8')
+	listRaws = depFile.readlines()
+	# to bypass : as POSTag, use an if condition
+	listRaws = [(":", "()") if(item[0] == ":") else item.split(":") for item in listRaws]
+	depDict = {}
+	for tag, rawPos in listRaws:
+		# the depDict will have tag as key and value is another dict: each dep tag is assigned an integer denoting their relative position toward each others.
+			depTagOrderDict = {}
+			depDict[tag] = depTagOrderDict
+			barePos = rawPos.split(bracketSeparator) if(rawPos.find(bracketSeparator) >= 0) else [rawPos]
+			# barePos is splitted bracket still in string, so clear out the parentheses and index them
+			barePos = [rawTagList.strip("()").split() if rawTagList.find(" ") >=0 else [rawTagList.strip("()")] for rawTagList in barePos]
+			correctPos = [(i, tag) for i, tagList in enumerate(barePos) for tag in tagList if tag not in excludeTags]
+			for i, tag in correctPos:
+				depTagOrderDict[tag] = i
+
+	depFile.close()
+	return depDict
+
 def customizedRecursiveRun(listFunction, node, runFunction):
 	# listFunction will create a list for runFunction to iterate through
 	listRunner = listFunction(node)
@@ -141,7 +161,35 @@ def runModelOnTrees(listTrees, listModels, splitByPunctuation=False, separator='
 			print("From old positioned list {!s} to {!s}: ".format([node.word for node in oldList], [node.word for node in orderedWordList]))
 		listResult.append([str(node.word) for node in orderedWordList])
 		deleteTree(tree)
+	
+	# print("Result length ", len(listResult))
+	return listResult
 
+def applyDepRuleOnTrees(listTrees, depRuleDict, debug=False, removeRoot=False):
+	def reorderByDep(node):
+		listNodes = list(node.children) + [node]
+		if(len(listNodes) <= 1):
+			return listNodes
+		depTagOrderDict = depRuleDict[node.tag]
+		defaultIdx = depTagOrderDict['self'] if 'self' in depTagOrderDict else 0
+		listNodesIdx = [depTagOrderDict.get(child.dependency, defaultIdx) if child is not node else defaultIdx for child in listNodes]
+		# Reorder base on the idx previously gotten, all the while preserving in-bracket positioning
+		listNodes = zip(listNodesIdx, listNodes)
+		listNodes = sorted(listNodes, key=lambda x: (x[0], x[1].pos))
+		
+		return [child[1] for child in listNodes]
+	
+	listResult = []
+	for tree in listTrees:
+		orderedWordList = []
+		customizedRecursiveRun(reorderByDep, tree, lambda node: orderedWordList.append(node))
+		if(removeRoot):
+			orderedWordList = filter(lambda node: node.pos > 0, orderedWordList)
+		if(debug):
+			oldList = sorted(tree.getAllNodeInTree(), key=lambda node: node.pos)
+			print("From old positioned list {!s} to {!s}: ".format([node.word for node in oldList], [node.word for node in orderedWordList]))
+		listResult.append([str(node.word) for node in orderedWordList])
+		deleteTree(tree)
 	return listResult
 
 def printResultToFile(fileoutDir, listOutput, spacing=" ", wrapper="{!s}", removeRoot=False):
@@ -174,7 +222,9 @@ if __name__ == '__main__':
 	parser = argparse.ArgumentParser(description='Run the synthesized models on .')
 	parser.add_argument('-i','--inputdir', type=str, default=None, required=True, help='location of the input file')
 	parser.add_argument('-o','--outputdir', type=str, default=None, help='location of the output file')
-	parser.add_argument('-m','--modeldir', type=str, default=None, help='location of the model files. These files must have extension .model(n) (e.g. .model2) and start from 1')
+	parser.add_argument('-m','--mode', type=str, default='model', help='this variable specify which kind of reordering are to be done. "model" for .model(n) file, dep for .dep file')
+	parser.add_argument('--modeldir', type=str, default=None, help='location of the model files. These files must have extension .model(n) (e.g. .model2) and start from 1. Will only be used with --mode model')
+	parser.add_argument('--depdir', type=str, default=None, help='location of the dep file, must have extension .dep and without debug information. Will only be used with --mode dep')
 	parser.add_argument('-d','--debug', action='store_true', help='print the swapping process and result to the stdout')
 	parser.add_argument('--input_extension', type=str, default="conll", help='file extension for the input processed file, default conll')
 	parser.add_argument('--output_extension', type=str, default="txt", help='output file extension, default txt')
@@ -185,25 +235,40 @@ if __name__ == '__main__':
 	# Add customized spacing and wrapper arguments for the export
 	if(args.outputdir is None):
 		args.outputdir = args.inputdir
-	if(args.modeldir is None):
-		args.modeldir = args.inputdir
-	
-	modelSize = checkModelSize(args.modeldir, args.model_size)
-	if(modelSize <= 0):
-		raise FileNotFoundError("Error when checking args.modeldir: No model files found. Make sure the path is valid and the models files started with .model1")
 	
 	startTimer = time.time()
 	def getTimer():
 		return time.time() - startTimer
 	
-	listModels = readModelFromFiles(args.modeldir, modelSize)
-	print("All models read, model found %d, time passed %.2fs." % (len(listModels), getTimer()))
-	
-	listTrees = runConllParser(args.inputdir, extension=args.input_extension, alignExtension=None)
-	print("List of trees generated, time passed %.2fs." % getTimer())
-	
-	result = runModelOnTrees(listTrees, listModels, splitByPunctuation=args.split_by_punctuation, debug=args.debug, removeRoot=not args.keep_root)
-	print("Reordering done for %d sentences, time passed %.2fs." % (len(result), getTimer()))
+	if(args.mode == 'model'):
+		if(args.modeldir is None):
+			args.modeldir = args.inputdir
+		
+		modelSize = checkModelSize(args.modeldir, args.model_size)
+		if(modelSize <= 0):
+			raise FileNotFoundError("Error when checking args.modeldir: No model files found. Make sure the path is valid and the models files started with .model1")
+		
+		listModels = readModelFromFiles(args.modeldir, modelSize)
+		print("All models read, model found %d, time passed %.2fs." % (len(listModels), getTimer()))
+		
+		listTrees = runConllParser(args.inputdir, extension=args.input_extension, alignExtension=None)
+		print("List of trees generated, time passed %.2fs." % getTimer())
+		
+		result = runModelOnTrees(listTrees, listModels, splitByPunctuation=args.split_by_punctuation, debug=args.debug, removeRoot=not args.keep_root)
+		print("Reordering done for %d sentences, time passed %.2fs." % (len(result), getTimer()))
+	elif(args.mode == 'dep'):
+		if(args.depdir is None):
+			args.depdir = args.inputdir
+		depRuleDict = createDepRuleDictFromFile(args.depdir + '.dep', bracketSeparator='->', excludeTags=['punct'])
+		print("RuleDict fully read, total of {:d} tags, time passed {:.2f}s".format(len(depRuleDict), getTimer()))
+		
+		listTrees = runConllParser(args.inputdir, extension=args.input_extension, alignExtension=None)
+		print("List of trees generated, time passed %.2fs." % getTimer())
+		
+		result = applyDepRuleOnTrees(listTrees, depRuleDict, debug=args.debug, removeRoot=not args.keep_root)
+		print("Reordering done for %d sentences, time passed %.2fs." % (len(result), getTimer()))
+	else:
+		raise argparse.ArgumentError("Mode string {} not recognized.")
 	exportDir = args.outputdir + '.' + args.output_extension
 	printResultToFile(exportDir, result) 
 	print("Result exported to file %s(overwrite), time passed %.2fs." % (exportDir, getTimer()))
