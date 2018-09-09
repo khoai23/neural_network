@@ -4,6 +4,7 @@ from ffBuilder import *
 from exampleBuilder import *
 import numpy as np
 from collections import OrderedDict
+from terminal import createTerminal
 
 far_left_token, close_left_token, close_right_token, far_right_token = ['<fl>', '<cl>', '<cr>', '<fr>']
 start_token, end_token = ['<s>', '<\s>']
@@ -437,7 +438,7 @@ def trainEmbeddingObsolete(fileAndMode, sessionTuple, dictTuple, batchSize, epoc
 def evaluateSimilarity(divResult):
 	return 1 - np.tanh(np.abs(np.log(divResult)))
 
-def findSimilarity(tupleMatrix, refDict, sample, mode=3):
+def findSimilarity(tupleMatrix, refDict, sample, mode=3, checkSize=10):
 	embeddingMatrix, normalizedMatrix = tupleMatrix
 	sampleMatrix = np.transpose([normalizedMatrix[i] for i in sample])
 	sampleSize = len(sample)
@@ -487,11 +488,11 @@ def evaluateEmbedding(sessionTuple, combinedDict, sampleSize, sampleWordWindow, 
 	embeddingMatrix = resultTuple[0].eval(session=session)
 	normalizedMatrix = resultTuple[1].eval(session=session)
 	# print(np.array2string(normalizedMatrix[2:6]))
-	findSimilarity((embeddingMatrix, normalizedMatrix), refDict, random_sample)
+	findSimilarity((embeddingMatrix, normalizedMatrix), refDict, random_sample, checkSize=checkSize)
 
 	return embeddingMatrix, normalizedMatrix
 
-def findAndPrintNearest(tupleMatrix, combinedDict, wordList, mode=3):
+def findAndPrintNearest(tupleMatrix, combinedDict, wordList, mode=3, checkSize=11):
 	wordDict = combinedDict[1]
 	refDict = combinedDict[2]
 	
@@ -504,8 +505,9 @@ def findAndPrintNearest(tupleMatrix, combinedDict, wordList, mode=3):
 			print("Word {} not found in dictionary.".format(word))
 	if(len(sample) == 0):
 		print("No acceptable words, exit @findAndPrintNearest.")
+		return
 	
-	findSimilarity(tupleMatrix, refDict, sample, mode=mode)
+	findSimilarity(tupleMatrix, refDict, sample, mode=mode, checkSize=checkSize)
 
 def exportEmbedding(exportMode, outputDir, outputExt, wordDict, resultMatrixTuple, embeddingCountAndSize, tagDictForRemoval=None):
 	if(exportMode == "all" or exportMode == "both"):
@@ -592,53 +594,59 @@ def modeStringParse(string):
 	return isNormal, isCBOW, windowSize, string
 	
 def runTerminal(args, items=None):
+		data = {}
+		data["select"] = 3
+		data["neighborNum"] = 10
 		if(not args.terminal_commands_only and items is not None):
 			resultTuple, dictTuple = items
+			data["embedding"] = resultTuple
+			data["dict"] = dictTuple
 		elif(args.terminal_commands_only):
 			print("Warning: in terminal command only mode, you do not have data. You must load a previous dump.")
 		else:
 			raise ValueError("Items is None while not args.terminal_commands_only.")
-		print("+++ Console Interactions Ready +++")
-		helperLine = "q/quit to exit, m/mode to select comparing embedding, e/export to try export a distribution image, i/input to input a list of words for comparison, s/save and l/load to save or load the command to directory"
-		print(helperLine)
-		selectMode = 3
-		while(True):
-			lastCommand = input("Input command: ").strip()
-			if(lastCommand == 'quit' or lastCommand == 'q'):
-				break
-			elif(lastCommand == 'mode' or lastCommand == 'm'):
-				try:
-					selectMode = int(input("1 for full, 2 for normalized, 3 for both: "))
-					if(selectMode > 3 or selectMode < 0):
-						selectMode = 3
-						print("Must select from the options specified.")
-					else:
-						print("Mode(int) changed to {:d}".format(selectMode))
-				except ValueError:
-					print("Invalid value inputted, must be int")
-			elif(lastCommand == 'export' or lastCommand == 'e'):
-				print("Unimplemented, please choose another one")
-			elif(lastCommand == 'help' or lastCommand == 'h'):
-				print(helperLine)
-			elif(lastCommand == 'input' or lastCommand == 'i'):
-				wordOrWords = input("The comparing words: ").strip()
-				if(wordOrWords.find(" ") >= 0):
-					listWords = wordOrWords.split()
-				else:
-					listWords = [wordOrWords]
-				findAndPrintNearest(resultTuple, dictTuple, listWords, mode=selectMode)
-			elif(lastCommand == 'save' or lastCommand == 's'):
-				path = input("Specify the save path: ")
-				saveFile = io.open(path, "wb")
-				pickle.dump((resultTuple, dictTuple), saveFile)
-				print("Dumped the needed data @{:s}".format(path))
-			elif(lastCommand == 'load' or lastCommand == 'l'):
-				path = input("Specify the load path: ")
-				loadFile = io.open(path, "rb")
-				resultTuple, dictTuple = pickle.load(loadFile)
-				print("Loaded the needed data @{:s}".format(path))
+
+		commandDict = {}
+		def modeSelector(data):
+			try:
+				data["select"] = int(input("1 for full, 2 for normalized, 3 for both: "))
+				data["neighborNum"] = int(input("Number of neighbors to be shown: "))
+			except ValueError as e:
+				print("Invalid value. Error: {}".format(e))
+			return data
+		commandDict["m"] = modeSelector
+		commandDict["mode"] = modeSelector
+		
+		def showNeighbor(data):
+			wordOrWords = input("The comparing words: ").strip()
+			if(wordOrWords.find(" ") >= 0):
+				listWords = wordOrWords.split()
 			else:
-				print("Invalid command, type help/h for a list of valid commands.")
+				listWords = [wordOrWords]
+			findAndPrintNearest(data["embedding"], data["dict"], listWords, mode=data["select"], checkSize=data["neighborNum"])
+		commandDict["i"] = showNeighbor
+		commandDict["input"] = showNeighbor
+		
+		def saveData(data):
+			path = input("Specify the save path: ")
+			saveFile = io.open(path, "wb")
+			pickle.dump(data, saveFile)
+			print("Dumped the needed data @{:s}".format(path))
+		commandDict["s"] = saveData
+		commandDict["save"] = saveData
+
+		def loadData(data):
+			path = input("Specify the load path: ")
+			loadFile = io.open(path, "rb")
+			data = pickle.load(loadFile)
+			print("Loaded the needed data @{:s}".format(path))
+			return data
+		commandDict["l"] = loadData
+		commandDict["load"] = loadData
+		
+		startLine = "+++ Console Interactions Ready +++"
+		createTerminal(data, commandDict, initialDisplayString=startLine)
+#		helperLine = "q/quit to exit, m/mode to select comparing embedding, e/export to try export a distribution image, i/input to input a list of words for comparison, s/save and l/load to save or load the command to directory"
 
 if __name__ == "__main__":
 	# Run argparse

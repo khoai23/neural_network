@@ -831,17 +831,27 @@ def createFormatModel(numChild, separator):
 	
 	return modelString, modelFunction, modelValue
 	
-def splitChildrenByPunctuation(children):
-	if(any(x.isPunctuation() for x in children) and len(children) > 1):
-		punct_indexes = [i for i,x in enumerate(children) if x.isPunctuation()]
-		if(0 not in punct_indexes):
-			punct_indexes = [-1] + punct_indexes
-		# Create slicing range based on the indexes of the punctuation, excluding these punctuations themselves
-		punct_slicing = [(punct_indexes[i]+1, punct_indexes[i+1] if i+1<len(punct_indexes) else len(children)) for i in range(len(punct_indexes))]
-		splitted_list = [children[start:end] for start, end in punct_slicing if start < end]
-		return splitted_list
-	else:
-		return [children]
+def splitChildrenByPunctuation(children, keepPunct=False):
+	children = sorted(children, key=lambda item: item.pos)
+	
+	splittedList = []
+	subList = []
+	for child in children:
+		if(child.isPunctuation()):
+			if(keepPunct):
+				subList.append(child)
+			# if subList not empty, add it into splittedList and reset anew
+			if(len(subList) > 0):
+				splittedList.append(subList)
+				subList = []
+		else:
+			subList.append(child)
+	# items left in subList, add it in
+	if(len(subList) > 0):
+		splittedList.append(subList)
+	
+	return splittedList
+
 
 def addTreeRelationByModelType(numChild, tree, alignmentDict, fullRelationDict, splitByPunctuation=False, separator = '_'):
 	modelString, modelKeyFunction, modelValue= createFormatModel(numChild, separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"

@@ -165,17 +165,27 @@ def runModelOnTrees(listTrees, listModels, splitByPunctuation=False, separator='
 	# print("Result length ", len(listResult))
 	return listResult
 
-def applyDepRuleOnTrees(listTrees, depRuleDict, debug=False, removeRoot=False):
+def applyDepRuleOnTrees(listTrees, depRuleDict, splitByPunctuation=False, debug=False, removeRoot=False):
 	def reorderByDep(node):
 		listNodes = list(node.children) + [node]
 		if(len(listNodes) <= 1):
 			return listNodes
+		if(splitByPunctuation):
+			listNodes = splitChildrenByPunctuation(listNodes, keepPunct=True)
+		else:
+			listNodes = [listNodes]
 		depTagOrderDict = depRuleDict[node.tag]
 		defaultIdx = depTagOrderDict['self'] if 'self' in depTagOrderDict else 0
-		listNodesIdx = [depTagOrderDict.get(child.dependency, defaultIdx) if child is not node else defaultIdx for child in listNodes]
-		# Reorder base on the idx previously gotten, all the while preserving in-bracket positioning
-		listNodes = zip(listNodesIdx, listNodes)
-		listNodes = sorted(listNodes, key=lambda x: (x[0], x[1].pos))
+		sortedListNodes = []
+		for subListNodes in listNodes:
+			# reorder each sublist instead
+			listNodesIdx = [depTagOrderDict.get(child.dependency, defaultIdx) if child is not node else defaultIdx for child in subListNodes]
+			# Reorder base on the idx previously gotten, all the while preserving in-bracket positioning
+			subListNodes = zip(listNodesIdx, subListNodes)
+			subListNodes = sorted(subListNodes, key=lambda x: (x[0], x[1].pos))
+			sortedListNodes.append(subListNodes)
+		# flatten the sortedListNodes back to one dimensional list
+		listNodes = [node for subList in sortedListNodes for node in subList]
 		
 		return [child[1] for child in listNodes]
 	
@@ -265,10 +275,10 @@ if __name__ == '__main__':
 		listTrees = runConllParser(args.inputdir, extension=args.input_extension, alignExtension=None)
 		print("List of trees generated, time passed %.2fs." % getTimer())
 		
-		result = applyDepRuleOnTrees(listTrees, depRuleDict, debug=args.debug, removeRoot=not args.keep_root)
+		result = applyDepRuleOnTrees(listTrees, depRuleDict, splitByPunctuation=args.split_by_punctuation, debug=args.debug, removeRoot=not args.keep_root)
 		print("Reordering done for %d sentences, time passed %.2fs." % (len(result), getTimer()))
 	else:
-		raise argparse.ArgumentError("Mode string {} not recognized.")
+		raise argparse.ArgumentError("Mode string {} not recognized.".format(args.mode))
 	exportDir = args.outputdir + '.' + args.output_extension
 	printResultToFile(exportDir, result) 
 	print("Result exported to file %s(overwrite), time passed %.2fs." % (exportDir, getTimer()))
