@@ -171,26 +171,33 @@ def applyDepRuleOnTrees(listTrees, depRuleDict, splitByPunctuation=False, debug=
 		if(len(listNodes) <= 1):
 			return listNodes
 		if(splitByPunctuation):
-			listNodes = splitChildrenByPunctuation(listNodes, keepPunct=True)
+			splittedListNodes = splitChildrenByPunctuation(listNodes, keepPunct=True)
+#			def convertListNodesToListString(lNode):
+#				return [node.word for node in lNode]
+#			print("Old: {}, Splitted: {}".format(convertListNodesToListString(sorted(listNodes, key=lambda item: item.pos)), [convertListNodesToListString(subList) for subList in splittedListNodes]))
 		else:
-			listNodes = [listNodes]
+			splittedListNodes = [listNodes]
 		depTagOrderDict = depRuleDict[node.tag]
 		defaultIdx = depTagOrderDict['self'] if 'self' in depTagOrderDict else 0
 		sortedListNodes = []
-		for subListNodes in listNodes:
-			# reorder each sublist instead
+		for subListNodes in splittedListNodes:
+			# reorder each sublist instead, and feed them into the sortedListNodes
 			listNodesIdx = [depTagOrderDict.get(child.dependency, defaultIdx) if child is not node else defaultIdx for child in subListNodes]
 			# Reorder base on the idx previously gotten, all the while preserving in-bracket positioning
 			subListNodes = zip(listNodesIdx, subListNodes)
 			subListNodes = sorted(subListNodes, key=lambda x: (x[0], x[1].pos))
 			sortedListNodes.append(subListNodes)
 		# flatten the sortedListNodes back to one dimensional list
-		listNodes = [node for subList in sortedListNodes for node in subList]
+		listNodes = [node[1] for subListNodes in sortedListNodes for node in subListNodes]
 		
-		return [child[1] for child in listNodes]
+		return listNodes
 	
 	listResult = []
+#	counter = 0
 	for tree in listTrees:
+#		counter += 1
+#		if(counter==14):
+#			sys.exit()
 		orderedWordList = []
 		customizedRecursiveRun(reorderByDep, tree, lambda node: orderedWordList.append(node))
 		if(removeRoot):

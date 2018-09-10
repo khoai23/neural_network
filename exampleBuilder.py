@@ -563,6 +563,8 @@ class WordTree:
 				self.phrase = child.phrase + WordTree.common_spacing + self.phrase
 			else:
 				self.phrase = self.phrase + WordTree.common_spacing + child.phrase"""
+	def haveChildPunctuation(self):
+		return any(child.isPunctuation() or child.haveChildPunctuation() for child in self.children)
 
 connectionRegex = re.compile("([\w:]+)\((.+)-(\d+), (.+)-(\d+)\)")
 posTagRegex = re.compile("(?!\(\w+ \w)\((\w+)")
@@ -832,20 +834,29 @@ def createFormatModel(numChild, separator):
 	return modelString, modelFunction, modelValue
 	
 def splitChildrenByPunctuation(children, keepPunct=False):
+	# We CANNOT rely on the punctuation recovered in children, since child can have punctuation between themselves
 	children = sorted(children, key=lambda item: item.pos)
 	
 	splittedList = []
 	subList = []
+	oldChildIdx = 0
 	for child in children:
 		if(child.isPunctuation()):
-			if(keepPunct):
-				subList.append(child)
-			# if subList not empty, add it into splittedList and reset anew
 			if(len(subList) > 0):
 				splittedList.append(subList)
 				subList = []
+			if(keepPunct):
+				splittedList.append([child])
+			# if subList not empty, add it into splittedList and reset anew
 		else:
-			subList.append(child)
+			# brute: if punctuation detected as grandchildren or lower, detach the child away as independent subList
+			if(child.haveChildPunctuation()):
+				if(len(subList) > 0):
+					splittedList.append(subList)
+				splittedList.append([child])
+				subList = []
+			else:
+				subList.append(child)
 	# items left in subList, add it in
 	if(len(subList) > 0):
 		splittedList.append(subList)
