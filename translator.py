@@ -771,7 +771,7 @@ def loadDataByMode(args, embeddingTuple):
 		print("Batches generated/loaded with no error, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
 		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
 		if(args.shuffle_batch):
-			batches = random.shuffle(batches)
+			random.shuffle(batches)
 		return batches, sample
 	elif(args.mode == 'infer'):
 		# In infer, can be batch of input/output if tgt detected; else only the inputs and its lengths
@@ -848,7 +848,6 @@ if __name__ == "__main__":
 	# testRun(args, sessionTuple, embeddingTuple)
 	
 	data = loadDataByMode(args, embeddingTuple)
-	print(data)
 	if(args.mode == 'train'):
 		# Try to load created batch file as default
 		batches, sample = data
