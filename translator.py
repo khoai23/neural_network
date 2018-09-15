@@ -749,13 +749,14 @@ def loadDataByMode(args, embeddingTuple):
 		if(os.path.isfile(otherBatchFileName) or (args.batch_file_name and os.path.isfile(args.batch_file_name))):
 			# try getting batches saved from previous iteration instead of creating new
 			batchesPath = args.batch_file_name if(not os.path.isfile(otherBatchFileName)) else otherBatchFileName
-			batchesFile = io.open(batchesPath, 'rb')
-			batches, sample = pickle.load(batchesFile)
-			batchesFile.close()
+			args.print_verbose("Load batch data from pickle at {:s}".format(batchesPath))
+			with io.open(batchesPath, 'rb') as batchesFile:
+				batches, sample = pickle.load(batchesFile)
 		else:
 			# If cannot find the data, create from files in direction
 			#try:
 				# create new batches from the files src_file and tgt_file specified
+				args.print_verbose("Load batch data from default input directory.")
 				batchesCoupling, sampleCoupling, _ = createSentenceCouplingFromFile(args)
 				batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
 				if(sampleCoupling is not None):
@@ -847,6 +848,7 @@ if __name__ == "__main__":
 	# testRun(args, sessionTuple, embeddingTuple)
 	
 	data = loadDataByMode(args, embeddingTuple)
+	print(data)
 	if(args.mode == 'train'):
 		# Try to load created batch file as default
 		batches, sample = data
