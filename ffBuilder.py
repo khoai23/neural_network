@@ -580,4 +580,6 @@ def loadFromPath(session, path):
 		saver.restore(session, path)
 	except tf.errors.NotFoundError:
 		print("Skip the load process @ path {} due to file not existing.".format(path))
+	except ValueError:
+		print("Path {} not a valid checkpoint. Ignore and continue..".format(path))
 	return session

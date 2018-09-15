@@ -284,6 +284,7 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 	inputLengthList, outputLengthList, batchSize, maximumUnrolling, dropout, _ = configTuple
 	avgLosses = [0]
 	loss = 1.0
+	bestValue = -1.0
 	for step in range(args.epoch):
 		#if(not args.train_greedy):
 		#	args.print_verbose(("Use TrainingHelper in iteration %d" if(useTrainingHelper) else "Use GreedyEmbeddingHelper in iteration %d") % step)
@@ -310,7 +311,7 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 		avgLosses[-1] = avgLosses[-1] / len(batches)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
 			# run evaluationFunction every evaluation_step epoch
-			evaluationFunction((step+1,avgLosses))
+			bestValue = evaluationFunction((step+1,avgLosses, bestValue))
 		avgLosses.append(0)
 	return avgLosses
 	
@@ -471,16 +472,17 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in inferSentences]
 	inferSentences = sorted(filter(lambda x: len(x)>args.maximum_sentence_length, inferSentences), key=lambda x:len(x))
 	# Split into smaller batch to avoid overruning the memory with batches too large. 
-	batchedSentences = []
-	while(inferSentences and len(inferSentences) > 0):
-		batchSize = args.batch_size if(args.batch_size > len(inferSentences)) else len(inferSentences)
-		newBatch = inferSentences[:batchSize]
-		inferSentences = None if(batchSize == len(inferSentences)) else inferSentences[batchSize:]
-		# newSize = [len(sentence) for sentence in newBatch]
-		batchedSentences.append(newBatch)
-	args.print_verbose("Number of created batches %d" % len(batchedSentences))
-	return batchedSentences
-	
+	batchSize = args.batch_size
+	numInferBatches = len(inferSentences) / batchSize + 1
+	rawBatches = [inferSentences[i*batchSize:(i+1)*batchSize] for i in range(numInferBatches)]
+	# the smaller batches will be zipped as input matrix and length
+	formattedBatches = []
+	for rawBatch in rawBatches:
+		lengthList = padMatrix(rawBatch)
+		formattedBatches.append((rawBatch, lengthList))
+	return formattedBatches
+
+		
 def padMatrix(matrix, paddingToken):
 	# find the longest line in the matrix to do the padding
 	# TODO plus one for the longest if not crossing abitrary maxLength
@@ -595,7 +597,7 @@ def paramsSaveList(str):
 		return False, []
 	elif(str[0] not in "ie"):
 		raise argparse.ArgumentTypeError("Must be i/e @save_params")
-	mode = str[0] == i
+	mode = str[0] == 'i'
 	paramList = str.strip("[] ").split(" ,")
 	return mode, paramList
 	
@@ -623,7 +625,7 @@ def tryLoadOrSaveParams(args, exception=None):
 			listParams = [param for param in vars(args) if param not in listParams]
 		if(isinstance(exception, list)):
 			# Some params will be automatically removed regardless of options
-			listParams = filter(lambda x: x in exception, listParams)
+			listParams = list(filter(lambda x: x in exception, listParams))
 		if(len(listParams) == 0):
 			raise argparse.ArgumentTypeError("Params list @save_params invalid.")
 		dictParams = dict((param, getattr(args, param)) for param in listParams)
@@ -650,7 +652,7 @@ if __name__ == "__main__":
 	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be forced to True in vocab read_mode.')
 	parser.add_argument('--vocab_init', type=str, default='uniform', help='Choose type of initializer for vocab mode. Default uniform, can be normal(gaussian).')
 	parser.add_argument('--initialize_range', type=strToRange, default=(-1.0, 1.0), help='The range to initialize variables, default (-1.0, 1.0).')
-	parser.add_argument('--directory', type=str, default=os.path.dirname(os.path.realpath(__file__)), help='The dictionary to keep all the training files. Default to the running directory.')
+	parser.add_argument('--directory', type=str, default=os.path.curdir, help='The dictionary to keep all the training files. Default to the running directory.')
 	parser.add_argument('-e', '--embedding_file_name', type=str, default='vocab', help='The names of the files for vocab or embedding. Default vocab.')
 	parser.add_argument('-i', '--input_file_name', type=str, default='input', help='The names of the files for training or inference. Default input.')
 	parser.add_argument('-o', '--output_file_name', type=str, default='output', help='The names of the files to write inference result in. Default output.')
@@ -696,6 +698,7 @@ if __name__ == "__main__":
 	parser.add_argument('--scheduled_sampling_rate', type=float, default=0.0, help='If specified > 0.0, use ScheduledEmbeddingTrainingHelper with the rate with step')
 	parser.add_argument('--scheduled_sampling_step', type=int, default=0, help='If specified a positive integer, use ScheduledEmbeddingTrainingHelper with the step specified')
 	parser.add_argument('--scheduled_sampling_type', type=str, default='linear', help='Use linear|exp|inv_sigmoid in the ScheduledEmbeddingTrainingHelper. Default use linear')
+	parser.add_argument('--save_when_evaluate', action='store_true', help='If specfied, save a .best model in the default save path')
 
 	# DEBUG
 	parser.add_argument('--debug', action='store_true', help='When activated, run debugSession function every debug_steps during training.')
@@ -793,7 +796,7 @@ if __name__ == "__main__":
 		tgtWordToId = embeddingTuple[1][0]
 		endTokenId = tgtWordToId[args.end_token]
 		def evaluationFunction(extraArgs):
-			iteration, losses = extraArgs
+			iteration, losses, prevBest = extraArgs
 			trainResult, inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
 			_, correctOutput, _, trimLength, trainInput = sample
 			print(stripResultArray(trainInput[rIdx1], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
@@ -804,9 +807,17 @@ if __name__ == "__main__":
 			inferResult = calculateBleu(correctOutput, inferResult, trimLength)
 			print("Iteration %d, time passed %.2fs, BLEU score %2.2f(@train) and %2.2f(@infer) " % (iteration, getTimer(), trainResult * 100.0, inferResult * 100.0))
 			print("Losses during this cycle: {}".format(losses[-args.evaluation_step:]))
-			return True
+			if(args.save_when_evaluate):
+				if(prevBest < inferResult):
+					bestPath = args.save_path + ".best"
+					builder.saveToPath(session, bestPath)
+					print("Save best eval model to {:s}.".format(bestPath))
+					return inferResult
+				else:
+					return prevBest
+			return -1.0
 		# evaluate the initialized model. Expect horrendous result
-		evaluationFunction((0, []))
+		evaluationFunction((0, [], -1.0))
 		# execute training
 		totalLossTrack = trainSession(args, sessionTuple, batches, evaluationFunction)
 	elif(args.mode == 'infer'):

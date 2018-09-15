@@ -47,13 +47,13 @@ def createDepRuleDictFromFile(filePath, bracketSeparator='->', excludeTags=[]):
 	for tag, rawPos in listRaws:
 		# the depDict will have tag as key and value is another dict: each dep tag is assigned an integer denoting their relative position toward each others.
 			depTagOrderDict = {}
-			depDict[tag] = depTagOrderDict
+			depDict[tag.strip()] = depTagOrderDict
 			barePos = rawPos.split(bracketSeparator) if(rawPos.find(bracketSeparator) >= 0) else [rawPos]
 			# barePos is splitted bracket still in string, so clear out the parentheses and index them
 			barePos = [rawTagList.strip("()").split() if rawTagList.find(" ") >=0 else [rawTagList.strip("()")] for rawTagList in barePos]
-			correctPos = [(i, tag) for i, tagList in enumerate(barePos) for tag in tagList if tag not in excludeTags]
-			for i, tag in correctPos:
-				depTagOrderDict[tag] = i
+			correctPos = [(i, deptag) for i, tagList in enumerate(barePos) for deptag in tagList if tag not in excludeTags]
+			for i, deptag in correctPos:
+				depTagOrderDict[deptag.strip()] = i
 
 	depFile.close()
 	return depDict
@@ -177,7 +177,7 @@ def applyDepRuleOnTrees(listTrees, depRuleDict, splitByPunctuation=False, debug=
 #			print("Old: {}, Splitted: {}".format(convertListNodesToListString(sorted(listNodes, key=lambda item: item.pos)), [convertListNodesToListString(subList) for subList in splittedListNodes]))
 		else:
 			splittedListNodes = [listNodes]
-		depTagOrderDict = depRuleDict[node.tag]
+		depTagOrderDict = depRuleDict[node.tag.strip()]
 		defaultIdx = depTagOrderDict['self'] if 'self' in depTagOrderDict else 0
 		sortedListNodes = []
 		for subListNodes in splittedListNodes:
@@ -201,10 +201,11 @@ def applyDepRuleOnTrees(listTrees, depRuleDict, splitByPunctuation=False, debug=
 		orderedWordList = []
 		customizedRecursiveRun(reorderByDep, tree, lambda node: orderedWordList.append(node))
 		if(removeRoot):
-			orderedWordList = filter(lambda node: node.pos > 0, orderedWordList)
+			orderedWordList = list(filter(lambda node: node.pos > 0, orderedWordList))
 		if(debug):
 			oldList = sorted(tree.getAllNodeInTree(), key=lambda node: node.pos)
 			print("From old positioned list {!s} to {!s}: ".format([node.word for node in oldList], [node.word for node in orderedWordList]))
+			assert len(oldList) == len(orderedWordList) + (1 if removeRoot else 0)
 		listResult.append([str(node.word) for node in orderedWordList])
 		deleteTree(tree)
 	return listResult

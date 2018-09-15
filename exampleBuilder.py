@@ -445,6 +445,18 @@ def createMinimalWordDictFromFile(filewordDir, refDict):
 		line = fileword.readline()
 	return wordDict
 	
+def createLegacyFormatPAC(separator):
+	formatPAC = separator.join(['%s' for i in range(3)])
+	def formatter(string, parent, child):
+		return string % (parent.tag, child.dependency, getDistance(child))
+	return formatPAC, formatter
+
+def createLegacyFormatSIB(separator):
+	formatSIB = separator.join(['%s' for i in range(4)])
+	def formatter(string, child, other, parent):
+		return string % (parent.tag, child.dependency, other.dependency, isNextToEachOther(child, other, parent))
+	return formatSIB, formatter
+
 def createFormatPAC(separator):
 	formatPAC = separator.join(['%s' for i in range(5)])
 	def formatter(string, parent, child):
@@ -457,8 +469,8 @@ def createFormatSIB(separator):
 		return string % (parent.tag, child.tag, child.dependency, other.tag, other.dependency, isNextToEachOther(child, other, parent))
 	return formatSIB, formatter
 	
-def addAllTreeRelationToDict(tree, alignmentDict, fullRelationDict, separator="_"):
-	formatPAC, formatterPAC = createFormatPAC(separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
+def addAllTreeRelationToDict(tree, alignmentDict, fullRelationDict, separator="_", legacyMode=False):
+	formatPAC, formatterPAC = createFormatPAC(separator) if(not legacyMode) else createLegacyFormatPAC(separator)
 	def tryAddingAllPAC(node):
 		for child in node.children:
 			# key = formatPAC % (node.tag, child.dependency, getDistance(child))
@@ -469,7 +481,7 @@ def addAllTreeRelationToDict(tree, alignmentDict, fullRelationDict, separator="_
 				switch += 1 if ((node.pos - child.pos) * (alignmentDict[node.pos] - alignmentDict[child.pos]) < 0) else 0
 			fullRelationDict[key] = (switch, total)
 	
-	formatSIB, formatterSIB = createFormatSIB(separator) # = "SIB" + separator + "%s" + separator + "%s" + separator + "%s" + separator + "%s"
+	formatSIB, formatterSIB = createFormatSIB(separator) if(not legacyMode) else createLegacyFormatSIB(separator)
 	def tryAddingAllSIB(node):
 		listChildren = list(node.children)
 		while(len(listChildren) > 1):
