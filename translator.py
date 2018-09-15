@@ -33,7 +33,7 @@ def getSentencesFromFile(fileDir, splitToken=' '):
 			result.append([line.strip()])
 	return result
 	
-def createSentenceCouplingFromFile(args):
+def createSentenceCouplingFromFile(args, keepSentencesIndexes=False):
 	srcSentences = getSentencesFromFile(os.path.join(args.directory, args.src_file))
 	tgtSentences = getSentencesFromFile(os.path.join(args.directory, args.tgt_file))
 	assert len(srcSentences) == len(tgtSentences)
@@ -43,9 +43,21 @@ def createSentenceCouplingFromFile(args):
 		# filter out those which are too long
 		if(len(srcSentences[i]) <= args.maximum_sentence_length and len(tgtSentences[i]) <= args.maximum_sentence_length):
 			coupling.append((srcSentences[i], tgtSentences[i]))
+		elif(args.trim_training_data):
+			coupling.append((srcSentences[i][:args.maximum_sentence_length], tgtSentences[i][:args.maximum_sentence_length]))
 	args.print_verbose('Sentences accepted from training files: %d' % len(coupling))
+	# sentences loss only without args.trim_training_data
+	assert (len(srcSentences) == len(coupling)) or not args.trim_training_data
 	# Sort by number of words in output sentences
-	coupling = sorted(coupling, key=lambda couple: (len(couple[1]), len(couple[0])))
+	if(keepSentencesIndexes):
+		# this is an option generally for infer: batches must have indexes to be reordered after inference
+		indexedCoupling = enumerate(coupling)
+		indexedCoupling = sorted(indexedCoupling, key=lambda idx, couple: (len(couple[1]), len(couple[0])))
+		correctIndex, coupling = zip(*indexedCoupling)
+	else:
+		coupling = sorted(coupling, key=lambda couple: (len(couple[1]), len(couple[0])))
+		correctIndex = None
+
 	if(args.dev_file_name):
 		# Try to get testing values
 		srcDev = args.src + args.dev_file_name if(args.prefix) else args.dev_file_name + '.' + args.src
@@ -63,7 +75,7 @@ def createSentenceCouplingFromFile(args):
 		args.print_verbose('Sentences accepted from dev files: %d' % len(otherCoupling))
 	else:
 		otherCoupling = None
-	return coupling, otherCoupling
+	return coupling, otherCoupling, correctIndex
 
 	
 def createEmbeddingCouplingFromFile(args):
@@ -304,9 +316,9 @@ def trainSession(args, sessionTuple, batches, evaluationFunction=None):
 			#	args.print_verbose("Loss %.4f @ global_steps %d" % (loss, args.global_steps))
 			avgLosses[-1] += loss
 			if(args.verbose):
-				if(args.global_steps % 100 == 0):
+				if(args.global_steps % args.verbose_timer == 0):
 					args.print_verbose("Global step %d, last loss on batch %2.4f, time passed %.2f" % (args.global_steps, loss, args.time_passed()))
-			if((args.global_steps+1) % args.debug_steps == 0 and args.debug):
+			if(args.global_steps % args.debug_steps == 0 and args.debug):
 				debugSession(args, session)
 		avgLosses[-1] = avgLosses[-1] / len(batches)
 		if(evaluationFunction and (step+1) % args.evaluation_step == 0):
@@ -409,7 +421,6 @@ def generateBatchesFromSentences(args, data, embeddingTuple, singleBatch=False):
 	inputLengthList = padMatrix(srcBatch, srcWordToId[args.end_token])
 	outputLengthList = padMatrix(tgtBatch, tgtWordToId[args.end_token])
 	tgtInputBatch = [ (startTokenPad + list(tgt))[:-1] for tgt in tgtBatch]
-	batchSize = len(srcBatch)
 	batches.append((srcBatch, tgtBatch, inputLengthList, outputLengthList, tgtInputBatch))
 	# Return the processed value
 	return batches
@@ -470,7 +481,10 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	unknownWordId = srcWordToId[args.unknown_word]
 	# Create input data
 	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in inferSentences]
-	inferSentences = sorted(filter(lambda x: len(x)>args.maximum_sentence_length, inferSentences), key=lambda x:len(x))
+	# default will have indexes of sorted sentences
+	indexedSentences = enumerate(inferSentences)
+	indexedSentences = sorted(indexedSentences, key=lambda idx, x:len(x))
+	indexes, inferSentences = zip(*indexedSentences)
 	# Split into smaller batch to avoid overruning the memory with batches too large. 
 	batchSize = args.batch_size
 	numInferBatches = len(inferSentences) / batchSize + 1
@@ -480,7 +494,7 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	for rawBatch in rawBatches:
 		lengthList = padMatrix(rawBatch)
 		formattedBatches.append((rawBatch, lengthList))
-	return formattedBatches
+	return formattedBatches, indexes
 
 		
 def padMatrix(matrix, paddingToken):
@@ -641,9 +655,8 @@ def strToRange(str):
 		str = str.strip("() ").split(',|')
 		return float(str[0], float(str[1]))
 	
-	
-if __name__ == "__main__":
-	# Run argparse
+def constructParser(loadDefault=False):
+		# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
 	# OVERALL CONFIG
 	parser.add_argument('-m','--mode', type=str, default='train', help='Mode to run the file. Currently only train|infer')
@@ -651,7 +664,7 @@ if __name__ == "__main__":
 	parser.add_argument('--import_default_dict', action='store_false', help='Do not use the varied length original embedding instead of the normalized version.')
 	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be forced to True in vocab read_mode.')
 	parser.add_argument('--vocab_init', type=str, default='uniform', help='Choose type of initializer for vocab mode. Default uniform, can be normal(gaussian).')
-	parser.add_argument('--initialize_range', type=strToRange, default=(-1.0, 1.0), help='The range to initialize variables, default (-1.0, 1.0).')
+	parser.add_argument('--initialize_range', type=strToRange, default=(-0.1, 0.1), help='The range to initialize variables, default (-0.1, 0.1).')
 	parser.add_argument('--directory', type=str, default=os.path.curdir, help='The dictionary to keep all the training files. Default to the running directory.')
 	parser.add_argument('-e', '--embedding_file_name', type=str, default='vocab', help='The names of the files for vocab or embedding. Default vocab.')
 	parser.add_argument('-i', '--input_file_name', type=str, default='input', help='The names of the files for training or inference. Default input.')
@@ -667,8 +680,8 @@ if __name__ == "__main__":
 	parser.add_argument('-s', '--save_path', type=str, default=None, help='Directory to load and save the trained model. Required in training mode.')
 	parser.add_argument('-b', '--batch_file_name', type=str, default=None, help='The names of created batch file for training. If not specified, will try to look for it in save_path with "bat" extension .')
 	parser.add_argument('--save_batch', action='store_true', help='If specified, the batch will be saved to batch_file_name for future training.')
+	parser.add_argument('--shuffle_batch', action='store_true', help='If specified, the batch will be shuffled randomly for each training execution.')
 	parser.add_argument('--epoch', type=int, default=100, help='How many times this model will train on current data. Default 100.')
-	parser.add_argument('--evaluation_step', type=int, default=20, help='For each evaluation_step epoch, run the check for accuracy. Default 20.')
 	parser.add_argument('--maximum_sentence_length', type=int, default=50, help='Maximum length of sentences. Default 50.')
 	parser.add_argument('--batch_size', type=int, default=128, help='Size of mini-batch for training. Default 128.')
 	
@@ -699,12 +712,87 @@ if __name__ == "__main__":
 	parser.add_argument('--scheduled_sampling_step', type=int, default=0, help='If specified a positive integer, use ScheduledEmbeddingTrainingHelper with the step specified')
 	parser.add_argument('--scheduled_sampling_type', type=str, default='linear', help='Use linear|exp|inv_sigmoid in the ScheduledEmbeddingTrainingHelper. Default use linear')
 	parser.add_argument('--save_when_evaluate', action='store_true', help='If specfied, save a .best model in the default save path')
-
+	parser.add_argument('--trim_training_data', action='store_true', help='If specfied, sentences with oversized length are trimmed instead of dropped')
 	# DEBUG
 	parser.add_argument('--debug', action='store_true', help='When activated, run debugSession function every debug_steps during training.')
 	parser.add_argument('--debug_steps', type=int, default=1, help='The step to run debug function. Default to every step (1).')
+	parser.add_argument('--evaluation_step', type=int, default=2, help='For each evaluation_step epoch, run the check for accuracy. Default 2.')
+	parser.add_argument('--verbose_timer', type=int, default=100, help='The global step to run timer. Default to 100.')
 
-	args = parser.parse_args()
+
+	if(loadDefault):
+		args = parser.parse_args([])
+	else:
+		args = parser.parse_args()
+	return args
+	
+def constructAndLoadSession(args):
+	tf.reset_default_graph()
+	if(args.read_mode == 'embedding'):
+		embeddingTuple = createEmbeddingCouplingFromFile(args)
+	elif(args.read_mode == 'vocab'):
+		embeddingTuple = createCouplingFromVocabFile(args)
+	sessionTuple = createSession(args, embeddingTuple)
+	session = sessionTuple[0]
+	if(args.save_path):
+		savePath = os.path.join(args.directory, args.save_path + ".ckpt")
+		builder.loadFromPath(session, savePath)
+	print("Creating session done, time passed %.2fs" % getTimer())
+	return sessionTuple, embeddingTuple
+
+def loadDataByMode(args, embeddingTuple):
+	# refer to creation of embeddingTuple for why
+	srcWordToId, tgtWordToId = embeddingTuple[0][0], embeddingTuple[1][0]
+	if(args.mode == 'train'):
+		# In train, must be a batch of input/output matrix and respective lengths
+		otherBatchFileName = os.path.join(args.directory, args.save_path + ".bat")
+		if(os.path.isfile(otherBatchFileName) or (args.batch_file_name and os.path.isfile(args.batch_file_name))):
+			# try getting batches saved from previous iteration instead of creating new
+			batchesPath = args.batch_file_name if(not os.path.isfile(otherBatchFileName)) else otherBatchFileName
+			batchesFile = io.open(batchesPath, 'rb')
+			batches, sample = pickle.load(batchesFile)
+			batchesFile.close()
+		else:
+			# If cannot find the data, create from files in direction
+			#try:
+				# create new batches from the files src_file and tgt_file specified
+				batchesCoupling, sampleCoupling, _ = createSentenceCouplingFromFile(args)
+				batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
+				if(sampleCoupling is not None):
+					sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple)[0]
+				else:
+					sample = generateRandomBatchesFromSet(args, batches, (srcWordToId[args.end_token], tgtWordToId[args.end_token], tgtWordToId[args.start_token]))
+			#except Exception:
+			#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
+		# Check batch for screwup in idx values
+		for batch in batches:
+			checkBatchValidity(args, batch, embeddingTuple)	
+		print("Batches generated/loaded with no error, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
+		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
+		if(args.shuffle_batch):
+			batches = random.shuffle(batches)
+		return batches, sample
+	elif(args.mode == 'infer'):
+		# In infer, can be batch of input/output if tgt detected; else only the inputs and its lengths
+		if(os.path.isfile(os.path.join(args.directory, args.tgt_file))):
+			# Has coupling possible, use default functions
+			batchesCoupling, _, correctIndex = createSentenceCouplingFromFile(args, keepSentencesIndexes=True)
+			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
+			inferInput = [batch[0] for batch in batches]
+			inferInputLength = [batch[2] for batch in batches]
+			correctOutput = [batch[1] for batch in batches] 
+			inferInput = zip(inferInput, inferInputLength)
+			args.print_verbose("Go with correctOutput and proper batch")
+		else:
+			inferInput, correctIndex = generateInferenceInputFromFile(args, embeddingTuple)
+			correctOutput = None
+			args.print_verbose("Go without correctOutput")
+		return inferInput, correctOutput, correctIndex
+	else:
+		raise ArgumentTypeError("args.mode unrecognized, must be train/infer: {:s}".format(args.mode))
+
+if __name__ == "__main__":
+	args = constructParser()
 	if(args.load_params or args.save_params):
 		tryLoadOrSaveParams(args, ['mode', 'directory'])
 	if(args.mode == 'infer'):
@@ -750,50 +838,20 @@ if __name__ == "__main__":
 	args.time_passed = getTimer
 	
 	# Create the session here
-	tf.reset_default_graph()
-	if(args.read_mode == 'embedding'):
-		embeddingTuple = createEmbeddingCouplingFromFile(args)
-	elif(args.read_mode == 'vocab'):
-		embeddingTuple = createCouplingFromVocabFile(args)
-	sessionTuple = createSession(args, embeddingTuple)
+	sessionTuple, embeddingTuple = constructAndLoadSession(args)
+	# extract the values from the tuples
 	session, inputOutputTuple, configTuple, trainTuple = sessionTuple
-	if(args.save_path):
-		savePath = os.path.join(args.directory, args.save_path + ".ckpt")
-		builder.loadFromPath(session, savePath)
-	print("Creating session done, time passed %.2fs" % getTimer())
+	srcEmbeddingTuple, tgtEmbeddingTuple = embeddingTuple
+	srcWordToId, srcIdToWord, _ = srcEmbeddingTuple
+	tgtWordToId, tgtIdToWord, _ = tgtEmbeddingTuple
 	# testRun(args, sessionTuple, embeddingTuple)
 	
-	
+	data = loadDataByMode(args, embeddingTuple)
 	if(args.mode == 'train'):
 		# Try to load created batch file as default
-		otherBatchFileName = os.path.join(args.directory, args.save_path + ".bat")
-		if(os.path.isfile(otherBatchFileName) or (args.batch_file_name and os.path.isfile(args.batch_file_name))):
-			# try getting batches saved from previous iteration instead of creating new
-			batchesPath = args.batch_file_name if(not os.path.isfile(otherBatchFileName)) else otherBatchFileName
-			batchesFile = io.open(batchesPath, 'rb')
-			batches = pickle.load(batchesFile)
-			batchesFile.close()
-		else:
-			# If cannot find the data, create from files in direction
-			#try:
-				# create new batches from the files src_file and tgt_file specified
-				batchesCoupling, sampleCoupling = createSentenceCouplingFromFile(args)
-				batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
-				if(sampleCoupling is not None):
-					sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple)[0]
-				elif(args.mode in ['train', 'test']):
-					sample = generateRandomBatchesFromSet(args, batches, (embeddingTuple[0][0][args.end_token], embeddingTuple[1][0][args.end_token], embeddingTuple[1][0][args.start_token]))
-			#except Exception:
-			#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
-		# Check batch for screwup in idx values
-		for batch in batches:
-			checkBatchValidity(args, batch, embeddingTuple)	
-		print("Batches generated/loaded with no error, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
-		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
-		
+		batches, sample = data
 		# create random idx to print a sample consistently during evaluation
 		rIdx1, rIdx2 = np.random.randint(len(sample[2]), size=2)
-		tgtWordToId = embeddingTuple[1][0]
 		endTokenId = tgtWordToId[args.end_token]
 		def evaluationFunction(extraArgs):
 			iteration, losses, prevBest = extraArgs
@@ -823,23 +881,10 @@ if __name__ == "__main__":
 	elif(args.mode == 'infer'):
 		# infer will try to read input in file input.src and output to file output.tgt
 		# INCOMPLETED
-		if(os.path.isfile(os.path.join(args.directory, args.tgt_file))):
-			# Has coupling possible, use default functions
-			batchesCoupling, _ = createSentenceCouplingFromFile(args)
-			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
-			inferInput = [batch[0] for batch in batches]
-			inferInputLength = [batch[2] for batch in batches]
-			correctOutput = [batch[1] for batch in batches] 
-			args.print_verbose("Go with correctOutput and proper batch")
-		else:
-			inferInput = generateInferenceInputFromFile(args, embeddingTuple)
-			correctOutput = None
-			args.print_verbose("Go without correctOutput")
-		inferOutput = inferenceSession(args, sessionTuple, zip(inferInput, inferInputLength))
-		
+		inferInput, correctData, reorderIdx = data
 		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0], '\n=>', inferOutput[0][0])
+		inferOutput = inferenceSession(args, sessionTuple, inferInput)
 		
-		print(np.shape(correctOutput))
 		# Flatten the inferOutput
 		inferOutput = np.concatenate(inferOutput, axis=0)
 		outputFile = outputInferenceToFile(args, embeddingTuple, inferOutput)
@@ -855,13 +900,13 @@ if __name__ == "__main__":
 		else:
 			print("Inference mode ran and saved to %s, time passed %.2fs" % (outputFile, getTimer()))
 	else:
-		raise argparse.ArgumentTypeError("Mode not registered. Please recheck.")
+		raise argparse.ArgumentTypeError("Invalid mode for main flow, must be train/infer, but is {:s}.".format(args.mode))
 	if(args.save_path):
 		builder.saveToPath(session, savePath)
 		if(batches and args.save_batch):
 			if(not args.batch_file_name):
 				args.batch_file_name = os.path.join(args.directory, args.save_path + ".bat")
 			batchesFile = io.open(args.batch_file_name, 'wb')
-			pickle.dump(batches, batchesFile)
+			pickle.dump((batches, sample), batchesFile)
 			batchesFile.close()
 	print("All task completed, total time passed %.2fs" % getTimer())
