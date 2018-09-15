@@ -368,7 +368,8 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 	# mask to only calculate loss on the length of the sequence, not the padding
 	target_weights = tf.sequence_mask(sequenceLengthList, maxUnrolling, dtype=tf.float32)
 	# May not be the most efficient opperation, but I digress. Split the loss by the length of the correct sentence
-	target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
+	# should not use this one, as it reduce the target_weights far too low
+#	target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
 	# the loss function being the reduce mean of the entire batch
 	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="crossent")) / tf.to_float(batchSize)
 	return loss, target_weights
