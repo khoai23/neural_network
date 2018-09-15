@@ -286,60 +286,6 @@ def createDecoder(settingDict):
 	# secondaryLossOp, secondaryCrossent = createSoftmaxDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
 	return trainLogits, lossOp, (trainOutput.sample_id, inferOutput.sample_id), crossent
 	
-def createSingleDecoder(isTrainingMode, settingDict):
-	prefix = settingDict.get('prefix', 'decoder')
-	attentionMechanism = settingDict.get('attention', None)
-	# the batchSize/maximumDecoderLength must be a placeholder that is filled during inference
-	batchSize = settingDict['batchSize']; maximumDecoderLength = settingDict['maximumDecoderLength']; outputEmbedding = settingDict['outputEmbedding']
-	encoderState = settingDict['encoderState']; correctResult = settingDict['correctResult']; encoderOutputSize = settingDict['encoderOutputSize']
-	correctResultLen = settingDict['correctResultLen']; startToken = settingDict['startTokenId']; endToken = settingDict['endTokenId']
-	decoderTrainingInput = settingDict['decoderInput']
-	cellType = settingDict.get('cellType', 'lstm')
-	cellType = tf.contrib.rnn.BasicLSTMCell
-	forgetBias = settingDict.get('forgetBias', 1.0)
-	dropout = settingDict.get('dropout', 1.0)
-	layerSize = settingDict.get('layerSize', encoderOutputSize)
-	layerDepth = settingDict.get('layerDepth', 2)
-	if(attentionMechanism is not None):
-		# attention mechanism use encoder output as input?
-		encoderOutput = settingDict['encoderOutput']
-		attentionLayerSize = settingDict.get('attentionLayerSize', 1)
-		if(attentionMechanism == 'luong'):
-			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, encoderOutput)
-		elif(attentionMechanism == 'bahdanau'):
-			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, encoderOutput)
-		else:
-			attentionMechanism = None
-	# Dropout must be a placeholder/operation by now, as encoder will convert it
-	assert isinstance(dropout, (tf.Operation, tf.Tensor)) and isinstance(correctResult, (tf.Operation, tf.Tensor))
-	# Decoder construction here
-	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout)
-	if(attentionMechanism is not None):
-		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism)
-	# conversion layer to convert from the hiddenLayers size into vector size if they have a mismatch
-	if(encoderOutputSize != layerSize):
-		decoderCells = tf.contrib.rnn.OutputProjectionWrapper(decoderCells, encoderOutputSize)
-	
-	if(isTrainingMode):
-		# Helper for training using the output taken from the encoder outside
-		trainHelper = tf.contrib.seq2seq.TrainingHelper(decoderTrainingInput, tf.fill([batchSize], maximumDecoderLength))
-		trainDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, trainHelper, encoderState)
-		trainOutput, trainDecoderState, _ = tf.contrib.seq2seq.dynamic_decode(trainDecoder)
-		trainLogits = trainOutput.rnn_output
-		lossOp, crossent = createDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
-		return trainLogits, lossOp, trainDecoderState, crossent
-	else:
-		# Helper for feeding the output of the current timespan for the inference mode
-		startToken = tf.fill([batchSize], startToken)
-		inferHelper = CustomGreedyEmbeddingHelper(outputEmbedding, startToken, endToken, True)
-		inferDecoder = tf.contrib.seq2seq.BasicDecoder(decoderCells, inferHelper, encoderState)
-		inferOutput, inferDecoderState, _ = tf.contrib.seq2seq.dynamic_decode(inferDecoder, maximum_iterations=maximumDecoderLength)
-		inferLogits = inferOutput.rnn_output
-		#secondaryLossOp, secondaryCrossent = createDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength, True)
-		return inferLogits, None, inferDecoderState, None
-	
-	#return (inferLogits, trainLogits), (lossOp, secondaryLossOp), (inferDecoderState, trainDecoderState), (crossent, secondaryCrossent)
-	
 	
 def createOptimizer(settingDict):
 	assert all(key in settingDict for key in ['mode', 'loss'])
@@ -422,7 +368,8 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 	# mask to only calculate loss on the length of the sequence, not the padding
 	target_weights = tf.sequence_mask(sequenceLengthList, maxUnrolling, dtype=tf.float32)
 	# May not be the most efficient opperation, but I digress. Split the loss by the length of the correct sentence
-	target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
+	# should not use this one, as it reduce the target_weights far too low
+#	target_weights = tf.transpose(tf.transpose(target_weights) / tf.to_float(sequenceLengthList))
 	# the loss function being the reduce mean of the entire batch
 	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="crossent")) / tf.to_float(batchSize)
 	return loss, target_weights
@@ -634,4 +581,6 @@ def loadFromPath(session, path):
 		saver.restore(session, path)
 	except tf.errors.NotFoundError:
 		print("Skip the load process @ path {} due to file not existing.".format(path))
+	except ValueError:
+		print("Path {} not a valid checkpoint. Ignore and continue..".format(path))
 	return session
