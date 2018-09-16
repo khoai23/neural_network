@@ -309,10 +309,11 @@ def createOptimizer(settingDict):
 									false_fn=lambda: trainingRate)
 		if('decayTraining' in settingDict and 'globalSteps' in locals()):
 			decayStep, decayThreshold, decayFactor = settingDict['decayTraining']
+			staircase = not settingDict.get('disableStaircase', False)
 			# warmupFactor = tf.exp(-2 / decayStep)
 			# decayFactor = warmupFactor**(tf.to_float(warmupStep - globalSteps))
 			trainingRate = tf.cond(globalSteps >= decayThreshold,
-									true_fn=lambda: tf.train.exponential_decay(trainingRate,(globalSteps - decayThreshold), decayStep, decayFactor, staircase=True),
+									true_fn=lambda: tf.train.exponential_decay(trainingRate, tf.maximum(globalSteps - decayThreshold, 0), decayStep, decayFactor, staircase=False),
 									false_fn=lambda: trainingRate)
 		
 		return tf.train.GradientDescentOptimizer(trainingRate)

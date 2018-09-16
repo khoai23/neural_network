@@ -256,6 +256,7 @@ def createSession(args, embedding):
 		if(args.decay_threshold >= 0):
 			args.print_verbose("Has decay in setting.")
 			settingDict['decayTraining'] = (args.decay_steps, args.decay_threshold, args.decay_factor)
+			settingDict['disableStaircase'] = args.decay_disable_staircase
 			
 		settingDict['loss'] = loss
 		trainingTrainOp = builder.createOptimizer(settingDict)
@@ -270,7 +271,7 @@ def createSession(args, embedding):
 			threshold = tf.constant(args.decay_threshold)
 			def decayFunction(trainingRate, globalSteps):
 				return tf.cond(global_steps >= threshold, 
-							true_fn=lambda: exponential_decay(trainingRate,(globalSteps - threshold), args.decay_steps, args.decay_factor, staircase=True),
+							true_fn=lambda: exponential_decay(trainingRate, tf.maximum(globalSteps - threshold, 0), args.decay_steps, args.decay_factor, staircase=True),
 							false_fn=trainingRate)
 		else:
 			decayFunction = None
@@ -434,11 +435,11 @@ def checkBatchValidity(args, batch, embeddingTuple):
 	# check on 0-1-4: input-output-tgtInput
 	input, output, _, _, tgtInput = batch
 	if(any(idx >= srcSize for idx in np.array(input).flatten())):
-		raise Exception("Caught invalid index @input, full input {} while maximumIdx {}".format(input, srcSize))
+		raise ValueError("Caught invalid index @input, full input {} while maximumIdx {}".format(input, srcSize))
 	if(any(idx >= tgtSize for idx in np.array(output).flatten())):
-                raise Exception("Caught invalid index @output, full output {} while maximumIdx {}".format(output, tgtSize))
+                raise ValueError("Caught invalid index @output, full output {} while maximumIdx {}".format(output, tgtSize))
 	if(any(idx >= tgtSize for idx in np.array(tgtInput).flatten())):
-                raise Exception("Caught invalid index @tgtInput, fullInput {} while maximumIdx {}".format(tgtInput, tgtSize))
+                raise ValueError("Caught invalid index @tgtInput, fullInput {} while maximumIdx {}".format(tgtInput, tgtSize))
 
 def generateRandomBatchesFromSet(args, batches, paddingToken):
 	raise Exception("Unfixed @generateRandomBatchesFromSet")
@@ -584,7 +585,7 @@ def convertInferenceToWriteData(inferOutput, tgtIdToWord=None, endTokenId=None, 
 	if(reorderIdx):
 		# reorder the inferOutput basing on the indexes if available
 		reorderedSentences = sorted(zip(reorderIdx, inferOutput))
-		inferOutput = zip(*reorderedSentences)[1]
+		_, inferOutput = zip(*reorderedSentences)
 	formattedSentences = []
 	for sentence in inferOutput:
 		sentenceEnd = sentence.find(endTokenId)
@@ -730,6 +731,7 @@ def constructParser(loadDefault=False):
 	parser.add_argument('--warmup_steps', type=int, default=0, help='The warmup factor for steps. Default 1/5 of the threshold.')
 	parser.add_argument('--decay_threshold', type=int, default=-1, help='The threshold to begin decay. If unspecified, will not use decay.')
 	parser.add_argument('--decay_steps', type=int, default=1000, help='The steps to staircase the learning rate decay (on global steps). Default 1000.')
+	parser.add_argument('--decay_disable_staircase', action='store_true', help='If used, will use staircase decay. It doesnt impact performance, so a secondary option.')
 	parser.add_argument('--decay_factor', type=float, default=0.5, help='The factor to multiply at each decay_steps. Default 0.5')
 	parser.add_argument('--gradient_clipping', type=float, default=5.0, help='The maximum value for gradient. Default 5.0')
 	parser.add_argument('--dynamic_clipping', action='store_true', help='If activate, clip the gradients based on the losses multiplying the gradient_clipping variable.')
@@ -743,7 +745,6 @@ def constructParser(loadDefault=False):
 	parser.add_argument('--debug_steps', type=int, default=1, help='The step to run debug function. Default to every step (1).')
 	parser.add_argument('--evaluation_step', type=int, default=2, help='For each evaluation_step epoch, run the check for accuracy. Default 2.')
 	parser.add_argument('--verbose_timer', type=int, default=100, help='The global step to run timer. Default to 100.')
-
 
 	if(loadDefault):
 		args = parser.parse_args([])
