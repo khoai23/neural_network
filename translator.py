@@ -480,7 +480,11 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 	srcWordToId = srcDictTuple[0]
 	unknownWordId = srcWordToId[args.unknown_word]
 	# Create input data
-	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in inferSentences]
+	return generateInferenceBatchesFromData(inferSentences, srcWordToId, unknownWordId)
+
+def generateInferenceBatchesFromData(data, srcWordToId=None, unknownWordId=None):
+	assert srcWordToId is not None and unknownWordId is not None
+	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in data]
 	# default will have indexes of sorted sentences
 	indexedSentences = enumerate(inferSentences)
 	indexedSentences = sorted(indexedSentences, key=lambda idx, x:len(x))
@@ -495,7 +499,6 @@ def generateInferenceInputFromFile(args, embeddingTuple):
 		lengthList = padMatrix(rawBatch)
 		formattedBatches.append((rawBatch, lengthList))
 	return formattedBatches, indexes
-
 		
 def padMatrix(matrix, paddingToken):
 	# find the longest line in the matrix to do the padding
@@ -564,18 +567,33 @@ def testRun(args, sessionTuple, dictTuple):
 	# print(session.run(logits[0], feed_dict={input:dummyInput, output:dummyOutput, outputLengthList:dummyOutputLengthList, batchSize:dummyBatchSize, maximumUnrolling:dummyMaximumUnrollingInBatch}))
 	sys.exit()
 	
-def outputInferenceToFile(args, embeddingTuple, inferOutput, leftAsIdx=False):
+def outputInferenceToFile(args, embeddingTuple, inferOutput, reorderIdx=None, leftAsIdx=False):
+	if(leftAsIdx):
+		raise ValueError("leftAsIdx option no longer supported.")
 	outputFilePath = args.tgt + args.output_file_name if(args.prefix) else args.output_file_name + '.' + args.tgt
-	outputFile = io.open(os.path.join(args.directory, outputFilePath), 'w', encoding='utf-8')
 	_, tgtDictTuple = embeddingTuple
-	tgtIdToWord = tgtDictTuple[1]
-	for sentence in inferOutput:
-		if(not leftAsIdx):
-			sentence = [tgtIdToWord[int(wordIdx)] for wordIdx in sentence]
-		sentence = ' '.join(sentence) + '\n'
-		outputFile.write(sentence)
-	outputFile.close()
+	tgtWordToId, tgtIdToWord, _ = tgtDictTuple[1]
+	endTokenId = tgtWordToId[args.end_token]
+	with io.open(os.path.join(args.directory, outputFilePath), 'w', encoding='utf-8') as outputFile:
+		writeData = convertInferenceToWriteData(inferOutput, tgtIdToWord=tgtIdToWord, endTokenId=endTokenId, reorderIdx=reorderIdx)
+		outputFile.writelines(writeData)
 	return outputFilePath
+
+def convertInferenceToWriteData(inferOutput, tgtIdToWord=None, endTokenId=None, separator=' ', reorderIdx=None):
+	assert tgtWordToId is not None and endTokenId is not None
+	if(reorderIdx):
+		# reorder the inferOutput basing on the indexes if available
+		reorderedSentences = sorted(zip(reorderIdx, inferOutput))
+		inferOutput = zip(*reorderedSentences)[1]
+	formattedSentences = []
+	for sentence in inferOutput:
+		sentenceEnd = sentence.find(endTokenId)
+		if(sentenceEnd >= 0):
+			sentence = sentence[:sentenceEnd]
+		sentence = [tgtIdToWord[int(wordIdx)] for wordIdx in sentence]
+		sentence = separator.join(sentence)
+		formattedSentences.append(sentence)
+	return formattedSentences
 	
 def calculateBleu(correct, result, trimData=None):
 	# calculate the bleu score using correct as baseline
@@ -623,10 +641,18 @@ def tryLoadOrSaveParams(args, exception=None):
 	if(args.params_path and ".params" not in args.params_path):
 		args.params_path += ".params"
 	
+	if(args.params_mode == 'pickle'):
+		loaderFunc = pickle.load
+		saverFunc = pickle.dump
+	elif(args.params_mode == 'json'):
+		loaderFunc = json.load
+		saverFunc = json.dump
+	else:
+		raise ArgumentTypeError("Unrecognized params_mode {:s}, must be json/pickle.".format(args.params_mode))
+
 	if(args.load_params):
-		paramFile = io.open(args.params_path, 'rb')
-		paramValues = pickle.load(paramFile)
-		paramFile.close()
+		with io.open(args.params_path, 'rb') as paramFile:
+			paramValues = loaderFunc(paramFile)
 		for param in paramValues:
 			setattr(args, param, paramValues[param])
 	elif(args.save_params):
@@ -643,9 +669,8 @@ def tryLoadOrSaveParams(args, exception=None):
 		if(len(listParams) == 0):
 			raise argparse.ArgumentTypeError("Params list @save_params invalid.")
 		dictParams = dict((param, getattr(args, param)) for param in listParams)
-		paramFile = io.open(args.params_path, 'wb')
-		pickle.dump(dictParams, paramFile)
-		paramFile.close()
+		with io.open(args.params_path, 'wb') as paramFile:
+			saverFunc(dictParams, paramFile)
 	
 def strToRange(str):
 	try:
@@ -660,7 +685,7 @@ def constructParser(loadDefault=False):
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
 	# OVERALL CONFIG
 	parser.add_argument('-m','--mode', type=str, default='train', help='Mode to run the file. Currently only train|infer')
-	parser.add_argument('--read_mode', type=str, default='embedding', help='Read binary, pickled, dictionary files as embedding, or vocab files. Default embedding')
+	parser.add_argument('--read_mode', type=str, default='embedding', help='Read binary, pickled, dictionary files as embedding, or vocab files as vocab. Default embedding')
 	parser.add_argument('--import_default_dict', action='store_false', help='Do not use the varied length original embedding instead of the normalized version.')
 	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be forced to True in vocab read_mode.')
 	parser.add_argument('--vocab_init', type=str, default='uniform', help='Choose type of initializer for vocab mode. Default uniform, can be normal(gaussian).')
@@ -739,6 +764,18 @@ def constructAndLoadSession(args):
 		builder.loadFromPath(session, savePath)
 	print("Creating session done, time passed %.2fs" % getTimer())
 	return sessionTuple, embeddingTuple
+
+def saveSession(args, sessionTuple):
+	session = sessionTuple[0]
+	if(args.save_path):
+		savePath = os.path.join(args.directory, args.save_path + ".ckpt")
+		builder.saveToPath(session, savePath)
+		if(batches and args.save_batch):
+			if(not args.batch_file_name):
+				args.batch_file_name = os.path.join(args.directory, args.save_path + ".bat")
+			batchesFile = io.open(args.batch_file_name, 'wb')
+			pickle.dump((batches, sample), batchesFile)
+			batchesFile.close()
 
 def loadDataByMode(args, embeddingTuple):
 	# refer to creation of embeddingTuple for why
@@ -888,7 +925,7 @@ if __name__ == "__main__":
 		
 		# Flatten the inferOutput
 		inferOutput = np.concatenate(inferOutput, axis=0)
-		outputFile = outputInferenceToFile(args, embeddingTuple, inferOutput)
+		outputFile = outputInferenceToFile(args, embeddingTuple, inferOutput, reorderIdx=reorderIdx)
 		
 		if(correctOutput):
 			# Flatten the correctOutput and trimLength as well
@@ -902,12 +939,5 @@ if __name__ == "__main__":
 			print("Inference mode ran and saved to %s, time passed %.2fs" % (outputFile, getTimer()))
 	else:
 		raise argparse.ArgumentTypeError("Invalid mode for main flow, must be train/infer, but is {:s}.".format(args.mode))
-	if(args.save_path):
-		builder.saveToPath(session, savePath)
-		if(batches and args.save_batch):
-			if(not args.batch_file_name):
-				args.batch_file_name = os.path.join(args.directory, args.save_path + ".bat")
-			batchesFile = io.open(args.batch_file_name, 'wb')
-			pickle.dump((batches, sample), batchesFile)
-			batchesFile.close()
+	saveSession(args, sessionTuple)
 	print("All task completed, total time passed %.2fs" % getTimer())
