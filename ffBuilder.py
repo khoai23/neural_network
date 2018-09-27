@@ -279,7 +279,7 @@ def createDecoder(settingDict):
 	# Helper for feeding the output of the current timespan for the inference mode
 	if(beamSize > 1):
 		# use beam search decoder, which will need specific kinds of input and a remade decoder cell
-		beamInitialState = beamDecoderCells.zero_state(dtype=tf.float32, batch_size=batchSize)
+		beamInitialState = beamDecoderCells.zero_state(dtype=tf.float32, batch_size=batchSize*beamSize)
 		inferDecoder = tf.contrib.seq2seq.BeamSearchDecoder(beamDecoderCells, outputEmbedding, tf.fill([batchSize], startToken), endToken, beamInitialState, beamSize, output_layer=projectionLayer)
 	else:
 		inferHelper = tf.contrib.seq2seq.GreedyEmbeddingHelper(outputEmbedding, tf.fill([batchSize], startToken), endToken)
