@@ -294,7 +294,8 @@ def createDecoder(settingDict):
 	inferOutput, _, _ = tf.contrib.seq2seq.dynamic_decode(inferDecoder, maximum_iterations=maximumDecoderLength)
 	if(beamSize > 1):
 		# we are currently trimming the beam_width dimension away and keep the one with the best probs
-		inferIds = tf.squeeze(inferOutput.predicted_ids[:, :1, :], axis=[1])
+		# the inferIds is [batch, tgt_len, beam] dimension. What the hell.
+		inferIds = tf.squeeze(inferOutput.predicted_ids[:, :, :1], axis=[-1])
 	else:
 		inferIds = inferOutput.sample_id
 	trainOutput, _, _ = tf.contrib.seq2seq.dynamic_decode(trainDecoder)
