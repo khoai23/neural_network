@@ -256,10 +256,11 @@ def createDecoder(settingDict):
 	# Decoder construction here
 	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 	if(attentionMechanism is not None):
-		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, initial_cell_state=encoderState , name=prefix + '_attention_wrapper')
 		if(beamSize > 1):
+			# create a beam cell wrapped by a batched mechanism first, before resubtituing
 			tiledState = tf.contrib.seq2seq.tile_batch(encoderState, beamSize)
 			beamDecoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, beamAttentionMechanism, attention_layer_size=layerSize, initial_cell_state=tiledState, name=prefix + '_attention_wrapper_beam')
+		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, initial_cell_state=encoderState , name=prefix + '_attention_wrapper')
 	# conversion layer to convert from the hiddenLayers size into vector size if they have a mismatch
 	# Helper for training using the output taken from the encoder outside
 	if('samplingVariable' not in settingDict):
