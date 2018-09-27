@@ -223,6 +223,7 @@ def createSession(args, embedding):
 		# inputLengthList = None
 		pass
 	
+	settingDict['beamSize'] = args.beam_width
 	settingDict['globalSteps'] = tf.train.get_or_create_global_step() #tf.Variable(args.global_steps, trainable=False, dtype=tf.int32, name='global_steps')
 	if(args.scheduled_sampling_rate > 0.0 and args.scheduled_sampling_step > 0):
 		# Create the needed steps for the decoder to use
