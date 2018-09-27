@@ -423,10 +423,9 @@ def generateBatchesFromSentences(args, data, wordToIdTuple, singleBatch=False):
 	# Return the processed value
 	return batches
 	
-def checkBatchValidity(args, batch, embeddingTuple):
+def checkBatchValidity(args, batch, idToWordTuple):
 	# Check if all input/output values in batch is in the boundary of dictTuple 
-	srcEmbeddingTuple, tgtEmbeddingTuple = embeddingTuple
-	srcIdToWord, tgtIdToWord = srcEmbeddingTuple[1], tgtEmbeddingTuple[1]
+	srcIdToWord, tgtIdToWord = idToWordTuple
 	srcSize, tgtSize = len(srcIdToWord), len(tgtIdToWord)
 	# args.print_verbose("Found srcSize: %d, tgtSize: %d" % (srcSize, tgtSize))
 	# check on 0-1-4: input-output-tgtInput
@@ -778,7 +777,8 @@ def saveSession(args, sessionTuple, batches=None):
 
 def loadDataByMode(args, embeddingTuple):
 	# refer to creation of embeddingTuple for why
-	srcWordToId, tgtWordToId = embeddingTuple[0][0], embeddingTuple[1][0]
+	srcWordToId, srcIdToWord, _ = embeddingTuple[0]
+	tgtWordToId, tgtIdToWord, _ = embeddingTuple[1]
 	wordToIdTuple = srcWordToId, tgtWordToId
 	if(args.mode == 'train'):
 		# In train, must be a batch of input/output matrix and respective lengths
@@ -804,7 +804,7 @@ def loadDataByMode(args, embeddingTuple):
 			#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
 		# Check batch for screwup in idx values
 		for batch in batches:
-			checkBatchValidity(args, batch, wordToIdTuple)	
+			checkBatchValidity(args, batch, (srcIdToWord, tgtIdToWord))
 		print("Batches generated/loaded with no error, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
 		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
 		if(args.shuffle_batch):
