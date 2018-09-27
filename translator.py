@@ -766,7 +766,7 @@ def constructAndLoadSession(args):
 	print("Creating session done, time passed %.2fs" % getTimer())
 	return sessionTuple, embeddingTuple
 
-def saveSession(args, sessionTuple):
+def saveSession(args, sessionTuple, batches=None):
 	session = sessionTuple[0]
 	if(args.save_path):
 		savePath = os.path.join(args.directory, args.save_path + ".ckpt")
@@ -918,6 +918,8 @@ if __name__ == "__main__":
 		evaluationFunction((0, [], -1.0))
 		# execute training
 		totalLossTrack = trainSession(args, sessionTuple, batches, evaluationFunction)
+		saveSession(args, sessionTuple, batches=batches)
+		print("Train mode complete and saved to args.save_path ({:s})".format(args.save_path))
 	elif(args.mode == 'infer'):
 		# infer will try to read input in file input.src and output to file output.tgt
 		# INCOMPLETED
@@ -942,5 +944,4 @@ if __name__ == "__main__":
 			print("Inference mode ran and saved to %s, time passed %.2fs" % (outputFile, getTimer()))
 	else:
 		raise argparse.ArgumentTypeError("Invalid mode for main flow, must be train/infer, but is {:s}.".format(args.mode))
-	saveSession(args, sessionTuple)
 	print("All task completed, total time passed %.2fs" % getTimer())
