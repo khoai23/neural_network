@@ -52,7 +52,7 @@ def createSentenceCouplingFromFile(args, keepSentencesIndexes=False):
 	if(keepSentencesIndexes):
 		# this is an option generally for infer: batches must have indexes to be reordered after inference
 		indexedCoupling = enumerate(coupling)
-		indexedCoupling = sorted(indexedCoupling, key=lambda idx, couple: (len(couple[1]), len(couple[0])))
+		indexedCoupling = sorted(indexedCoupling, key=lambda couple: (len(couple[1][1]), len(couple[1][0])))
 		correctIndex, coupling = zip(*indexedCoupling)
 	else:
 		coupling = sorted(coupling, key=lambda couple: (len(couple[1]), len(couple[0])))
