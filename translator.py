@@ -899,7 +899,8 @@ if __name__ == "__main__":
 			trainResult, inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
 			_, correctOutput, _, trimLength, trainInput = sample
 			viewSet = [[trainInput[i], trainResult[i], inferResult[i], correctOutput[i]] for i in (rIdx1, rIdx2) ]
-			viewSet = [[stripResultArray(item) for item in subSet] for subSet in viewSet]
+			# this parser kinda screw the training input since it is tgt's endTokenId
+			viewSet = [[stripResultArray(item, endTokenId) for item in subSet] for subSet in viewSet]
 			viewSet = ["{}[{}]=>{}[{}]\nTRAIN: {}[{}]\nINFER: {}[{}]".format(inp, lookup(inp, srcIdToWord), tres, lookup(tres, tgtIdToWord), ires, lookup(ires, tgtIdToWord), cor, lookup(cor, tgtIdToWord)) for inp, tres, ires, cor in viewSet]
 			viewSet = "\n-----------------------\n".join(viewSet)
 			print(viewSet)
