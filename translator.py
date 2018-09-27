@@ -344,12 +344,12 @@ def inferenceSession(args, session, data):
 	session, inputOutputTuple, configTuple, _ = sessionTuple
 	input, _, _ = inputOutputTuple
 	inputLengthList, _, batchSize, maximumUnrolling, dropout, outputIds = configTuple
-	inferrenceGreedyOutput, _ = outputIds
+	_, inferrenceOutput = outputIds
 	# Use default values for maximumUnrolling. Defaulted, but just do it to be sure. outputLengthList and decoderInput should not be neccessary as we are calling only GreedyEmbeddingHelper
 	output = []
 	for infInput, infInputLength in data:
 		feed_dict = {input:infInput, inputLengthList:infInputLength, batchSize:len(infInput), maximumUnrolling:args.maximum_sentence_length, dropout:1.0}
-		decodeOutput = session.run(inferrenceGreedyOutput, feed_dict=feed_dict)
+		decodeOutput = session.run(inferrenceOutput, feed_dict=feed_dict)
 		output.append(decodeOutput)
 	return output
 	
@@ -921,8 +921,8 @@ if __name__ == "__main__":
 		# infer will try to read input in file input.src and output to file output.tgt
 		# INCOMPLETED
 		inferInput, correctData, reorderIdx = data
-		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0], '\n=>', inferOutput[0][0])
 		inferOutput = inferenceSession(args, sessionTuple, inferInput)
+		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0], '\n=>', inferOutput[0][0])
 		
 		# Flatten the inferOutput
 		inferOutput = np.concatenate(inferOutput, axis=0)
