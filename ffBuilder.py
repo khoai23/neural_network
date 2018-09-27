@@ -240,14 +240,15 @@ def createDecoder(settingDict):
 			tiledMemory = tf.contrib.seq2seq.tile_batch(encoderOutput, multiplier=beamSize)
 			tiledLength = tf.contrib.seq2seq.tile_batch(encoderLengthList, multiplier=beamSize)
 		# attentionLayerSize = settingDict.get('attentionLayerSize', 1)
-		if('luong' in attentionMechanism):
-			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, scale=('scaled' in attentionMechanism))
+		attentionMechanismName = attentionMechanism
+		if('luong' in attentionMechanismName):
+			attentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, scale=('scaled' in attentionMechanismName))
 			if(beamSize > 1):
-				beamAttentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, scale=('scaled' in attentionMechanism))
-		elif('bahdanau' in attentionMechanism):
-			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, normalize=('norm' in attentionMechanism))
+				beamAttentionMechanism = tf.contrib.seq2seq.LuongAttention(layerSize, memory=tiledMemory, memory_sequence_length=tiledLength, scale=('scaled' in attentionMechanismName))
+		elif('bahdanau' in attentionMechanismName):
+			attentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, normalize=('norm' in attentionMechanismName))
 			if(beamSize > 1):
-				beamAttentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, memory=encoderOutput, memory_sequence_length=encoderLengthList, normalize=('norm' in attentionMechanism))
+				beamAttentionMechanism = tf.contrib.seq2seq.BahdanauAttention(layerSize, memory=tiledMemory, memory_sequence_length=tiledLength, normalize=('norm' in attentionMechanismName))
 		else:
 			attentionMechanism = None
 	# Dropout must be a placeholder/operation by now, as encoder will convert it
