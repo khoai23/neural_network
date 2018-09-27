@@ -207,7 +207,7 @@ def createSession(args, embedding):
 	args.print_verbose("Start token is %d. End token is %d." % (startTokenId, endTokenId))
 	# mode = tf.placeholder_with_default(True, shape=())
 	# construct the settingDict
-	# settingDict['mode'] = False
+	# the following settings is MANDATORY. Without any of the below setting, it simply won't work
 	settingDict['startTokenId'] = startTokenId; settingDict['endTokenId'] = endTokenId
 	settingDict['correctResult'] = output; settingDict['outputEmbedding'] = tgtEmbeddingVector;
 	settingDict['correctResultLen'] = outputLengthList; settingDict['encoderState'] = encoderState; settingDict['decoderOutputSize'] = tgtNumWords
@@ -222,7 +222,6 @@ def createSession(args, embedding):
 		# as feed_dict do not allow None in 1.5, we leave the placeholder be
 		# inputLengthList = None
 		pass
-		
 	
 	settingDict['globalSteps'] = tf.train.get_or_create_global_step() #tf.Variable(args.global_steps, trainable=False, dtype=tf.int32, name='global_steps')
 	if(args.scheduled_sampling_rate > 0.0 and args.scheduled_sampling_step > 0):
@@ -713,6 +712,7 @@ def constructParser(loadDefault=False):
 	
 	parser.add_argument('--layer_size', type=int, default=128, help='Size of hidden layer in each cell. Default to 128. Will be rewritten to size of embedding if in embedding read_mode.')
 	parser.add_argument('--layer_depth', type=int, default=2, help='Depth of the greatest cell (number of sub-cell within it). Default 2.')
+	parser.add_argument('--beam_width', type=int, default=1, help='The width of the beam to be used in BeamSearchDecoder, with 1 using Greedy.')
 	
 	# SAVE STUFF
 	parser.add_argument('--load_params', action='store_true', help='Use a json or pickle file as setting. All arguments found in file will be overwritten.')
@@ -721,7 +721,7 @@ def constructParser(loadDefault=False):
 	parser.add_argument('-p', '--params_path', type=str, default=None, help='The path of params. If not specified, take save_path as subtitution. Will cause exception as normal in load_params.')
 	
 	# MODEL CONFIG
-	parser.add_argument('-a', '--attention', type=str, default=None, help='If specified, use attention architecture.')
+	parser.add_argument('-a', '--attention', type=str, default='scaled_luong', help='Use attention architecture. If not bahdanau/luong, will not use attention')
 #	parser.add_argument('--train_greedy', action='store_true', help='If specified, will attempt to train using the GreedyEmbeddingHelper when its accuracy is worse than TrainingHelper.')
 	parser.add_argument('--colocate', action='store_true', help='If specified, do colocate regarding gradient calculation.')
 	parser.add_argument('--dropout', type=float, default=1.0, help='The dropout used for training. Will be automatically set to 1.0 in infer mode. Default 1.0')

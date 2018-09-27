@@ -28,7 +28,7 @@ def count_ngram(candidate, references, n):
 	r = 0
 	c = 0
 	# print(candidate,'\n', references, n)
-	for si in range(len(candidate)):
+	for si, cand_sentence in enumerate(candidate):
 		# Calculate precision for each sentence
 		ref_counts = []
 		ref_lengths = []
@@ -36,30 +36,23 @@ def count_ngram(candidate, references, n):
 		for reference in references:
 			ref_sentence = reference[si]
 			ngram_d = {}
-			words = ref_sentence.strip().split()
+			words = ref_sentence.strip().split() if isinstance(ref_sentence, str) else ref_sentence
 			ref_lengths.append(len(words))
 			limits = len(words) - n + 1
 			# loop through the sentance consider the ngram length
 			for i in range(limits):
 				ngram = ' '.join(words[i:i+n]).lower()
-				if ngram in ngram_d.keys():
-					ngram_d[ngram] += 1
-				else:
-					ngram_d[ngram] = 1
+				ngram_d[ngram] = ngram_d.get(ngram, 0) + 1
 			ref_counts.append(ngram_d)
 			# print(words, limits)
 			# print(ngram_d)
 		# candidate
-		cand_sentence = candidate[si]
 		cand_dict = {}
-		words = cand_sentence.strip().split()
+		words = cand_sentence.strip().split() if isinstance(cand_sentence, str) else cand_sentence
 		limits = len(words) - n + 1
 		for i in range(0, limits):
 			ngram = ' '.join(words[i:i + n]).lower()
-			if ngram in cand_dict:
-				cand_dict[ngram] += 1
-			else:
-				cand_dict[ngram] = 1
+			cand_dict[ngram] = cand_dict.get(ngram, 0) + 1
 		# print(words)
 		# print(cand_dict)
 		clipped_count += clip_count(cand_dict, ref_counts)
@@ -100,7 +93,7 @@ def best_length_match(ref_l, cand_l):
 
 
 def brevity_penalty(c, r):
-	if c > r:
+	if c > r or c == 0:
 		bp = 1
 	else:
 		bp = math.exp(1-(float(r)/c))
