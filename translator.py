@@ -572,7 +572,7 @@ def outputInferenceToFile(args, embeddingTuple, inferOutput, reorderIdx=None, le
 		raise ValueError("leftAsIdx option no longer supported.")
 	outputFilePath = args.tgt + args.output_file_name if(args.prefix) else args.output_file_name + '.' + args.tgt
 	_, tgtDictTuple = embeddingTuple
-	tgtWordToId, tgtIdToWord, _ = tgtDictTuple[1]
+	tgtWordToId, tgtIdToWord, _ = tgtDictTuple
 	endTokenId = tgtWordToId[args.end_token]
 	with io.open(os.path.join(args.directory, outputFilePath), 'w', encoding='utf-8') as outputFile:
 		writeData = convertInferenceToWriteData(inferOutput, tgtIdToWord=tgtIdToWord, endTokenId=endTokenId, reorderIdx=reorderIdx)
@@ -826,6 +826,7 @@ def loadDataByMode(args, embeddingTuple):
 			inferInput, correctIndex = generateInferenceInputFromFile(args, embeddingTuple)
 			correctOutput = None
 			args.print_verbose("Go without correctOutput")
+		# data will be returned as (input - inputLength) list of batches, (correctOutput) list of batches, and reordering indexes
 		return list(inferInput), correctOutput, correctIndex
 	else:
 		raise ArgumentTypeError("args.mode unrecognized, must be train/infer: {:s}".format(args.mode))
@@ -922,7 +923,7 @@ if __name__ == "__main__":
 		# INCOMPLETED
 		inferInput, correctData, reorderIdx = data
 		inferOutput = inferenceSession(args, sessionTuple, inferInput)
-		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0], '\n=>', inferOutput[0][0])
+		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0][0], '\n=>', inferOutput[0][0])
 		
 		# Flatten the inferOutput
 		inferOutput = np.concatenate(inferOutput, axis=0)
