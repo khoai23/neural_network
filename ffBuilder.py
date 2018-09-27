@@ -221,16 +221,16 @@ def createDecoder(settingDict):
 	layerDepth = settingDict.get('layerDepth', 2)
 	beamSize = settingDict.get('beamSize', 1)
 	
-	if(correctResult is not None):
-		# the training input append startToken id to the front of all training sentences 
-		correctShape = tf.shape(correctResult)
-		decoderTrainingInput = tf.concat([tf.fill([correctShape[0], 1], startToken), correctResult], axis=1)
-		# remove the last index in d2 (tf.Tensor.getittem)
-		# decoderTrainingInput = tf.slice(decoderTrainingInput, [0, 0], [correctShape[0], correctShape[1] - 2])
-		decoderTrainingInput = decoderTrainingInput[:, :-1]
-		# look up the input through the outputEmbedding
-		with tf.control_dependencies([tf.assert_equal(tf.shape(decoderTrainingInput), tf.shape(correctResult))]):
-			decoderTrainingInput = tf.nn.embedding_lookup(outputEmbedding, decoderTrainingInput, name='input_decoder_vectors')
+	assert correctResult is not None
+	# the training input append startToken id to the front of all training sentences 
+	correctShape = tf.shape(correctResult)
+	decoderTrainingInput = tf.concat([tf.fill([correctShape[0], 1], startToken), correctResult], axis=1)
+	# remove the last index in d2 (tf.Tensor.getittem)
+	# decoderTrainingInput = tf.slice(decoderTrainingInput, [0, 0], [correctShape[0], correctShape[1] - 2])
+	decoderTrainingInput = decoderTrainingInput[:, :-1]
+	# look up the input through the outputEmbedding
+	with tf.control_dependencies([tf.assert_equal(tf.shape(decoderTrainingInput), tf.shape(correctResult))]):
+		decoderTrainingInput = tf.nn.embedding_lookup(outputEmbedding, decoderTrainingInput, name='input_decoder_vectors')
 	
 	attentionMechanism = settingDict.get('attention', None)
 	if(attentionMechanism is not None):
@@ -260,8 +260,10 @@ def createDecoder(settingDict):
 		if(beamSize > 1):
 			# create a beam cell wrapped by a batched mechanism first, before resubtituing
 			tiledState = tf.contrib.seq2seq.tile_batch(encoderState, beamSize)
-			beamDecoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, beamAttentionMechanism, attention_layer_size=layerSize, initial_cell_state=tiledState, name=prefix + '_attention_wrapper_beam')
-		decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, initial_cell_state=encoderState , name=prefix + '_attention_wrapper')
+			beamDecoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, beamAttentionMechanism, attention_layer_size=layerSize, initial_cell_state=tiledState, name=prefix + "_attention_wrapper")
+		# set to reuse the beam if available
+		with tf.variable_scope(tf.get_variable_scope(), reuse=(True if beamSize > 1 else tf.AUTO_REUSE)):
+			decoderCells = tf.contrib.seq2seq.AttentionWrapper(decoderCells, attentionMechanism, attention_layer_size=layerSize, initial_cell_state=encoderState, name=prefix + "_attention_wrapper")
 	# conversion layer to convert from the hiddenLayers size into vector size if they have a mismatch
 	# Helper for training using the output taken from the encoder outside
 	if('samplingVariable' not in settingDict):
@@ -303,8 +305,6 @@ def createDecoder(settingDict):
 		inferLogits = tf.layers.dense(trainLogits, decoderOutputSize, name='shared_projection', reuse=True)'''
 	# sample_id is the argmax of the output. It can be used during beam searches and training
 	# sample_id = trainOutput.sample_id
-	# correctResult in bareMode are [batchSize, maximumDecoderLength, vectorSize] represent correct value expected.
-	# correctResult in bareMode are [batchSize, maximumDecoderLength] represent correct ids expected.
 	lossOp, crossent = createSoftmaxDecoderLossOperation(trainLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
 	# secondaryLossOp, secondaryCrossent = createSoftmaxDecoderLossOperation(inferLogits, correctResult, correctResultLen, batchSize, maximumDecoderLength)
 	return trainLogits, lossOp, (trainOutput.sample_id, inferIds), crossent
