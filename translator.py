@@ -77,7 +77,6 @@ def createSentenceCouplingFromFile(args, keepSentencesIndexes=False):
 		otherCoupling = None
 	return coupling, otherCoupling, correctIndex
 
-	
 def createEmbeddingCouplingFromFile(args):
 	srcDict = getEmbeddingFromFile(os.path.join(args.directory, args.src_dict_file), args.import_default_dict)
 	tgtDict = getEmbeddingFromFile(os.path.join(args.directory, args.tgt_dict_file), args.import_default_dict)
@@ -926,7 +925,7 @@ if __name__ == "__main__":
 		# INCOMPLETED
 		inferInput, correctData, reorderIdx = data
 		inferOutput = inferenceSession(args, sessionTuple, inferInput)
-		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0][0], '\n=>', inferOutput[0][0])
+		args.print_verbose("Sample @idx=[0], first batch:", inferInput[0][0][0], [srcIdToWord[i] for i in inferInput[0][0][0]], '\n=>', inferOutput[0][0], [tgtIdToWord[i] for i in inferOutput[0][0]])
 		
 		# Flatten the inferOutput
 		inferOutput = np.concatenate(inferOutput, axis=0)
