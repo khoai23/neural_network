@@ -138,7 +138,6 @@ def createCouplingFromVocabFile(args):
 		tgtWordToId[key] = counter
 		tgtIdToWord[counter] = key
 		counter += 1
-		
 	
 	return (srcWordToId, srcIdToWord, None), (tgtWordToId, tgtIdToWord, None)
 	
@@ -476,6 +475,7 @@ def generateInferenceInputFromFile(args, srcWordToId):
 	# Will only concern src side and single file
 	inferSentences = getSentencesFromFile(os.path.join(args.directory, args.src_file))
 	unknownWordId = srcWordToId[args.unknown_word]
+	assert unknownWordId == 0
 	# Create input data
 	return generateInferenceBatchesFromData(inferSentences, srcWordToId, unknownWordId)
 
@@ -589,7 +589,7 @@ def convertInferenceToWriteData(inferOutput, tgtIdToWord=None, endTokenId=None, 
 		if(sentenceEnd >= 0):
 			sentence = sentence[:sentenceEnd]
 		sentence = [tgtIdToWord[int(wordIdx)] for wordIdx in sentence]
-		sentence = separator.join(sentence)
+		sentence = separator.join(sentence) + '\n'
 		formattedSentences.append(sentence)
 	return formattedSentences
 	
