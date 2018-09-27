@@ -492,7 +492,7 @@ def generateInferenceBatchesFromData(data, srcWordToId=None, unknownWordId=None)
 	indexes, inferSentences = zip(*indexedSentences)
 	# Split into smaller batch to avoid overruning the memory with batches too large. 
 	batchSize = args.batch_size
-	numInferBatches = len(inferSentences) / batchSize + 1
+	numInferBatches = len(inferSentences) // batchSize + 1
 	rawBatches = [inferSentences[i*batchSize:(i+1)*batchSize] for i in range(numInferBatches)]
 	# the smaller batches will be zipped as input matrix and length
 	formattedBatches = []
