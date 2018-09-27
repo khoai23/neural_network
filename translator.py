@@ -892,14 +892,17 @@ if __name__ == "__main__":
 		# create random idx to print a sample consistently during evaluation
 		rIdx1, rIdx2 = np.random.randint(len(sample[2]), size=2)
 		endTokenId = tgtWordToId[args.end_token]
+		def lookup(seq, ldict):
+			return [ldict[item] for item in seq]
 		def evaluationFunction(extraArgs):
 			iteration, losses, prevBest = extraArgs
 			trainResult, inferResult = evaluateSession(args, sessionTuple, embeddingTuple, sample)
 			_, correctOutput, _, trimLength, trainInput = sample
-			print(stripResultArray(trainInput[rIdx1], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
-			print('=> INFER: ', stripResultArray(inferResult[rIdx1], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx1], endTokenId))
-			print(stripResultArray(trainInput[rIdx2], endTokenId), '\n=> TRAIN: ', stripResultArray(trainResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
-			print('=> INFER: ', stripResultArray(inferResult[rIdx2], endTokenId), '\n= ', stripResultArray(correctOutput[rIdx2], endTokenId))
+			viewSet = [[trainInput[i], trainResult[i], inferResult[i], correctOutput[i]] for i in (rIdx1, rIdx2) ]
+			viewSet = [[stripResultArray(item) for item in subSet] for subSet in viewSet]
+			viewSet = ["{}[{}]=>{}[{}]\nTRAIN: {}[{}]\nINFER: {}[{}]".format(inp, lookup(inp, srcIdToWord), tres, lookup(tres, tgtIdToWord), ires, lookup(ires, tgtIdToWord), cor, lookup(cor, tgtIdToWord)) for inp, tres, ires, cor in viewSet]
+			viewSet = "\n-----------------------\n".join(viewSet)
+			print(viewSet)
 			trainResult = calculateBleu(correctOutput, trainResult, trimLength)
 			inferResult = calculateBleu(correctOutput, inferResult, trimLength)
 			print("Iteration %d, time passed %.2fs, BLEU score %2.2f(@train) and %2.2f(@infer) " % (iteration, getTimer(), trainResult * 100.0, inferResult * 100.0))

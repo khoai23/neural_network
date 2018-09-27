@@ -229,7 +229,7 @@ def createDecoder(settingDict):
 		# decoderTrainingInput = tf.slice(decoderTrainingInput, [0, 0], [correctShape[0], correctShape[1] - 2])
 		decoderTrainingInput = decoderTrainingInput[:, :-1]
 		# look up the input through the outputEmbedding
-		with tf.control_dependencies([tf.assert_none_equal(decoderTrainingInput, correctResult), tf.assert_equal(tf.shape(decoderTrainingInput), tf.shape(correctResult))]):
+		with tf.control_dependencies([tf.assert_equal(tf.shape(decoderTrainingInput), tf.shape(correctResult))]):
 			decoderTrainingInput = tf.nn.embedding_lookup(outputEmbedding, decoderTrainingInput, name='input_decoder_vectors')
 	
 	attentionMechanism = settingDict.get('attention', None)
