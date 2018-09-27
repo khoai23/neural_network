@@ -396,9 +396,8 @@ def debugSession(args, session):
 	# Return the values
 	return (maxVal, maxValTensor), (minVal, minValTensor)
 
-def generateBatchesFromSentences(args, data, embeddingTuple, singleBatch=False):
-	srcDictTuple, tgtDictTuple = embeddingTuple
-	srcWordToId, tgtWordToId = srcDictTuple[0], tgtDictTuple[0]
+def generateBatchesFromSentences(args, data, wordToIdTuple, singleBatch=False):
+	srcWordToId, tgtWordToId = wordToIdTuple
 	srcUnknownID, tgtUnknownID = srcWordToId[args.unknown_word], tgtWordToId[args.unknown_word]
 	startTokenPad = [tgtWordToId[args.start_token]]
 	# data are binding tuples of (s1, s2) for src-tgt, s1/s2 preprocessed into array of respective words
@@ -473,16 +472,15 @@ def generateRandomBatchesFromSet(args, batches, paddingToken):
 	sampleDecoderInput = [ ([outputStartToken] + list(out))[:-1] for out in sampleOutput]
 	return sampleInput, sampleOutput, len(listSample), sampleLengthList, sampleDecoderInput
 	
-def generateInferenceInputFromFile(args, embeddingTuple):
+def generateInferenceInputFromFile(args, srcWordToId):
 	# Will only concern src side and single file
 	inferSentences = getSentencesFromFile(os.path.join(args.directory, args.src_file))
-	srcDictTuple, _ = embeddingTuple
-	srcWordToId = srcDictTuple[0]
 	unknownWordId = srcWordToId[args.unknown_word]
 	# Create input data
 	return generateInferenceBatchesFromData(inferSentences, srcWordToId, unknownWordId)
 
 def generateInferenceBatchesFromData(data, srcWordToId=None, unknownWordId=None):
+	print(srcWordToId)
 	assert srcWordToId is not None and unknownWordId is not None
 	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in data]
 	# default will have indexes of sorted sentences
@@ -781,6 +779,7 @@ def saveSession(args, sessionTuple, batches=None):
 def loadDataByMode(args, embeddingTuple):
 	# refer to creation of embeddingTuple for why
 	srcWordToId, tgtWordToId = embeddingTuple[0][0], embeddingTuple[1][0]
+	wordToIdTuple = srcWordToId, tgtWordToId
 	if(args.mode == 'train'):
 		# In train, must be a batch of input/output matrix and respective lengths
 		otherBatchFileName = os.path.join(args.directory, args.save_path + ".bat")
@@ -796,16 +795,16 @@ def loadDataByMode(args, embeddingTuple):
 				# create new batches from the files src_file and tgt_file specified
 				args.print_verbose("Load batch data from default input directory.")
 				batchesCoupling, sampleCoupling, _ = createSentenceCouplingFromFile(args)
-				batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
+				batches = generateBatchesFromSentences(args, batchesCoupling, wordToIdTuple)
 				if(sampleCoupling is not None):
-					sample = generateBatchesFromSentences(args, sampleCoupling, embeddingTuple)[0]
+					sample = generateBatchesFromSentences(args, sampleCoupling, wordToIdTuple)[0]
 				else:
 					sample = generateRandomBatchesFromSet(args, batches, (srcWordToId[args.end_token], tgtWordToId[args.end_token], tgtWordToId[args.start_token]))
 			#except Exception:
 			#	raise argparse.ArgumentTypeError("Have no saved batches and no new src/tgt files for training. Exiting.")
 		# Check batch for screwup in idx values
 		for batch in batches:
-			checkBatchValidity(args, batch, embeddingTuple)	
+			checkBatchValidity(args, batch, wordToIdTuple)	
 		print("Batches generated/loaded with no error, time passed %.2f, amount of batches %d" % (getTimer(), len(batches)))
 		args.print_verbose("Size of sampleBatch: %d" % len(sample[2]))
 		if(args.shuffle_batch):
@@ -816,14 +815,14 @@ def loadDataByMode(args, embeddingTuple):
 		if(os.path.isfile(os.path.join(args.directory, args.tgt_file))):
 			# Has coupling possible, use default functions
 			batchesCoupling, _, correctIndex = createSentenceCouplingFromFile(args, keepSentencesIndexes=True)
-			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
+			batches = generateBatchesFromSentences(args, batchesCoupling, wordToIdTuple)
 			inferInput = [batch[0] for batch in batches]
 			inferInputLength = [batch[2] for batch in batches]
 			correctData = [(batch[1], batch[3]) for batch in batches] 
 			inferInput = zip(inferInput, inferInputLength)
 			args.print_verbose("Go with correctOutput and proper batch")
 		else:
-			inferInput, correctIndex = generateInferenceInputFromFile(args, embeddingTuple)
+			inferInput, correctIndex = generateInferenceInputFromFile(args, srcWordToId)
 			correctData = None
 			args.print_verbose("Go without correctOutput")
 		# data will be returned as (input - inputLength) list of batches, (correctOutput) list of batches, and reordering indexes
