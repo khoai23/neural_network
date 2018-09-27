@@ -488,7 +488,7 @@ def generateInferenceBatchesFromData(data, srcWordToId=None, unknownWordId=None)
 	inferSentences = [[srcWordToId.get(word, unknownWordId) for word in sentence] for sentence in data]
 	# default will have indexes of sorted sentences
 	indexedSentences = enumerate(inferSentences)
-	indexedSentences = sorted(indexedSentences, key=lambda idx, x:len(x))
+	indexedSentences = sorted(indexedSentences, key=lambda item:len(item[1]))
 	indexes, inferSentences = zip(*indexedSentences)
 	# Split into smaller batch to avoid overruning the memory with batches too large. 
 	batchSize = args.batch_size

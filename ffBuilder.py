@@ -224,10 +224,10 @@ def createDecoder(settingDict):
 	if(correctResult is not None):
 		# the training input append startToken id to the front of all training sentences 
 		correctShape = tf.shape(correctResult)
-		decoderTrainingInput = tf.concat((tf.fill([correctShape[0], 1], startToken), correctResult), axis=1)
+		decoderTrainingInput = tf.concat([tf.fill([correctShape[0], 1], startToken), correctResult], axis=1)
 		# remove the last index in d2 (tf.Tensor.getittem)
 		# decoderTrainingInput = tf.slice(decoderTrainingInput, [0, 0], [correctShape[0], correctShape[1] - 2])
-		decoderTrainingInput = decoderTrainingInput[0:, 0:-1]
+		decoderTrainingInput = decoderTrainingInput[:, :-1]
 		# look up the input through the outputEmbedding
 		decoderTrainingInput = tf.nn.embedding_lookup(outputEmbedding, decoderTrainingInput, name='input_decoder_vectors')
 	
