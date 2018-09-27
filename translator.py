@@ -587,8 +587,7 @@ def convertInferenceToWriteData(inferOutput, tgtIdToWord=None, endTokenId=None, 
 		_, inferOutput = zip(*reorderedSentences)
 	formattedSentences = []
 	for sentence in inferOutput:
-		sentence = sentence.tolist()
-		sentenceEnd = sentence.find(endTokenId)
+		sentenceEnd = next((i for i, tok in enumerate(sentence) if tok == endTokenId), -1)
 		if(sentenceEnd >= 0):
 			sentence = sentence[:sentenceEnd]
 		sentence = [tgtIdToWord[int(wordIdx)] for wordIdx in sentence]
