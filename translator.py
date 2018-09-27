@@ -819,12 +819,12 @@ def loadDataByMode(args, embeddingTuple):
 			batches = generateBatchesFromSentences(args, batchesCoupling, embeddingTuple)
 			inferInput = [batch[0] for batch in batches]
 			inferInputLength = [batch[2] for batch in batches]
-			correctOutput = [batch[1] for batch in batches] 
+			correctData = [(batch[1], batch[3]) for batch in batches] 
 			inferInput = zip(inferInput, inferInputLength)
 			args.print_verbose("Go with correctOutput and proper batch")
 		else:
 			inferInput, correctIndex = generateInferenceInputFromFile(args, embeddingTuple)
-			correctOutput = None
+			correctData = None
 			args.print_verbose("Go without correctOutput")
 		# data will be returned as (input - inputLength) list of batches, (correctOutput) list of batches, and reordering indexes
 		return list(inferInput), correctOutput, correctIndex
@@ -929,11 +929,12 @@ if __name__ == "__main__":
 		inferOutput = np.concatenate(inferOutput, axis=0)
 		outputFile = outputInferenceToFile(args, embeddingTuple, inferOutput, reorderIdx=reorderIdx)
 		
-		if(correctOutput):
+		if(correctData is not None):
 			# Flatten the correctOutput and trimLength as well
 			# correctOutput = np.concatenate(correctOutput, axis=0)
+			correctOutput, trimLength = zip(*correctData)
 			correctOutput = [item for sublist in correctOutput for item in sublist]
-			trimLength = np.concatenate([batch[3] for batch in batches])
+			trimLength = np.concatenate(trimLength)
 			# print(np.shape(correctOutput), np.shape(inferOutput), np.shape(trimLength))
 			inferResult = calculateBleu(correctOutput, inferOutput, trimLength)
 			print("Inference mode ran and saved to %s, BLEU score %2.2f, time passed %.2fs" % (outputFile, inferResult * 100.0, getTimer()))
