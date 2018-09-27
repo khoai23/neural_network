@@ -497,7 +497,7 @@ def generateInferenceBatchesFromData(data, srcWordToId=None, unknownWordId=None)
 	# the smaller batches will be zipped as input matrix and length
 	formattedBatches = []
 	for rawBatch in rawBatches:
-		lengthList = padMatrix(rawBatch)
+		lengthList = padMatrix(rawBatch, unknownWordId)
 		formattedBatches.append((rawBatch, lengthList))
 	return formattedBatches, indexes
 		
