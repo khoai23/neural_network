@@ -826,7 +826,7 @@ def loadDataByMode(args, embeddingTuple):
 			inferInput, correctIndex = generateInferenceInputFromFile(args, embeddingTuple)
 			correctOutput = None
 			args.print_verbose("Go without correctOutput")
-		return inferInput, correctOutput, correctIndex
+		return list(inferInput), correctOutput, correctIndex
 	else:
 		raise ArgumentTypeError("args.mode unrecognized, must be train/infer: {:s}".format(args.mode))
 
