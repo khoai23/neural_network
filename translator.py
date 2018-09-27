@@ -827,7 +827,7 @@ def loadDataByMode(args, embeddingTuple):
 			correctData = None
 			args.print_verbose("Go without correctOutput")
 		# data will be returned as (input - inputLength) list of batches, (correctOutput) list of batches, and reordering indexes
-		return list(inferInput), correctOutput, correctIndex
+		return list(inferInput), correctData, correctIndex
 	else:
 		raise ArgumentTypeError("args.mode unrecognized, must be train/infer: {:s}".format(args.mode))
 
