@@ -1,4 +1,18 @@
-import sys, re, argparse, io, time
+import sys, re, argparse, io, time, os
+import itertools
+import pprint
+
+def prettyPrintDict(header, target, stream=sys.stdout, width=80):
+	stream.write("{ ")
+	counter = width / 2
+	for key in target:
+		itemString = "{}: {}, ".format(key, target[key])
+		if(counter + len(itemString) > width and counter > 0):
+			stream.write("\n")
+			counter = 0
+		stream.write(itemString)
+		counter += len(itemString)
+	stream.write(" }\n")
 
 blankLineRegex = re.compile("^\s*$")
 PACFormatString = u"PAC {}, ({} {} {}) ({} {} {}) {} {} {}\n"
@@ -15,7 +29,9 @@ def getDataBlock(lines, checkRegex, keepRegexLine=False):
 				currentBlock.append(line)
 		else:
 			currentBlock.append(line)
-			
+		
+	if(len(currentBlock) > 0):
+		allBlocks.append(currentBlock)
 	return allBlocks
 	
 def filterBlock(allBlocks, sentenceRegex = None):
@@ -609,7 +625,7 @@ def runStanfordParser(fileinDir, extension='parser'):
 	
 	return (treeList, alignmentList)
 	
-conllDataRegex = re.compile("(\d+)\t(.+)\t_\t([\w$\.,:\"\'-]+)\t([\w$\.,:\"\'-]+)\t_\t(\d+)\t(\w+)")
+conllDataRegex = re.compile("(\d+)\t(.+)\t_\t([\w$\.,:\"\'\-]+|_)\t([\w$\.,:\"\'\-]+|_)\t_\t(\d+)\t(\w+)")
 def runConllParser(fileinDir, extension='parser', alignExtension='align'):
 	# Run parser for conll
 	fileparser = fileinDir if extension is None else fileinDir + '.' + extension
@@ -708,140 +724,47 @@ def deleteTree(treeRoot):
 	bottomUpRecursiveRun(removeChildren, treeRoot)
 	del treeRoot
 
-def writeDataArff(fileoutDir, allExamples, wordDict, wordLen, tagDict, wordDefaultKey='<unk>'):
-	# TODO case for tagDict
-	posTag, dependencyTag = tagDict
-	wordDefaultKey = wordDict.get(wordDefaultKey, None)
-	
-	def getWordForVector(wordName, vectorsize):
-		return [wordName + 'Vector' + str(i+1) for i in range(vectorsize)]
-		
-	def getStringFromVector(wordVector, vectorsize=-1):
-		if(vectorsize == -1):
-			vectorsize = len(wordVector)
-		result = ''
-		for dim in wordVector:
-			result += str(dim) + ", "
-		return result
-		
-	fileoutpac = io.open(fileoutDir + '_pac.arff', 'w', encoding='utf-8')
-	fileoutsib = io.open(fileoutDir + '_sib.arff', 'w', encoding='utf-8')
-	# Write the class structure for PAC
-	fileoutpac.write(u"@RELATION parent-child\n\n")
-	fileoutpac.write(u"@ATTRIBUTE parentPos  NUMERIC\n")
-	fileoutpac.write(u"@ATTRIBUTE childPos  NUMERIC\n")
-	for dim in getWordForVector('parent', wordLen):
-		fileoutpac.write(u"@ATTRIBUTE {} NUMERIC\n".format(dim))
-	fileoutpac.write(u"@ATTRIBUTE parentPosTagId  NUMERIC\n")
-	fileoutpac.write(u"@ATTRIBUTE parentDependencyTagId  NUMERIC\n")
-	for dim in getWordForVector('child', wordLen):
-		fileoutpac.write(u"@ATTRIBUTE {} NUMERIC\n".format(dim))
-	fileoutpac.write(u"@ATTRIBUTE childPosTagId  NUMERIC\n")
-	fileoutpac.write(u"@ATTRIBUTE childDependencyTagId  NUMERIC\n")
-	fileoutpac.write(u"@ATTRIBUTE punctuationSeperator  NUMERIC\n")
-	fileoutpac.write(u"@ATTRIBUTE parentChildDistance  NUMERIC\n")
-	
-	fileoutpac.write(u"\n@ATTRIBUTE class  {0, 1}\n")
-	fileoutpac.write(u"\n@data\n")
-	
-	# Write the class structure for SIB
-	fileoutsib.write(u"@RELATION siblings\n\n")
-	fileoutsib.write(u"@ATTRIBUTE onePos  NUMERIC\n")
-	fileoutsib.write(u"@ATTRIBUTE otherPos  NUMERIC\n")
-	for dim in getWordForVector('one', wordLen):
-		fileoutsib.write(u"@ATTRIBUTE {} NUMERIC\n".format(dim))
-	fileoutsib.write(u"@ATTRIBUTE onePosTagId  NUMERIC\n")
-	fileoutsib.write(u"@ATTRIBUTE oneDependencyTagId  NUMERIC\n")
-	fileoutsib.write(u"@ATTRIBUTE oneParentDistance  NUMERIC\n")
-	for dim in getWordForVector('other', wordLen):
-		fileoutsib.write(u"@ATTRIBUTE {} NUMERIC\n".format(dim))
-	fileoutsib.write(u"@ATTRIBUTE otherPosTagId  NUMERIC\n")
-	fileoutsib.write(u"@ATTRIBUTE otherDependencyTagId  NUMERIC\n")
-	fileoutsib.write(u"@ATTRIBUTE otherParentDistance  NUMERIC\n")
-	for dim in getWordForVector('parent', wordLen):
-		fileoutsib.write(u"@ATTRIBUTE {} NUMERIC\n".format(dim))
-	fileoutsib.write(u"@ATTRIBUTE parentPosTagId  NUMERIC\n")
-	fileoutsib.write(u"@ATTRIBUTE punctuationSeperator  NUMERIC\n")
-	
-	fileoutsib.write(u"\n@ATTRIBUTE class  {0, 1}\n")
-	
-	fileoutsib.write(u"\n@data\n")
-	
-	
-	# Write the data into respective file
-	for example in allExamples:
-		for key in example:
-			type, node, other, switch = example[key]
-			# Ignore if punctuation key
-			if(node.dependency == WordTree.punctuation_dep or other.dependency == WordTree.punctuation_dep):
-				# punctuation node, discarding cases
-				continue
-			if(type == 'PAC'):
-				# Word will have trailing comma, so it cannot have comma behind it
-				parentVectorString = getStringFromVector(wordDict.get(node.word, wordDefaultKey))
-				childVectorString = getStringFromVector(wordDict.get(other.word, wordDefaultKey))
-				# parentPos, childPos, parentVector, parentPosTagId, parentDependencyTagId,
-				# childVector, childPosTagId, childDependencyTagId, punctuation, distance, class
-				try:
-					fileoutpac.write("{}, {}, {} {}, {}, {} {}, {}, {}, {}, {}\n".format(node.pos, other.pos,
-						parentVectorString, posTag[node.tag], dependencyTag[node.dependency],
-						childVectorString, posTag[other.tag], dependencyTag[other.dependency],
-						getPunctuationInBetween(other, node), getDistance(other, node), 1 if(switch) else 0))
-				except KeyError:
-					print("KeyError, list: {} {} {} {}".format(node.tag, node.dependency, other.tag, other.dependency))
-					print("KeyError, exist: {} {} {} {}".format(node.tag in posTag, node.dependency in dependencyTag, other.tag in posTag, other.dependency in dependencyTag))
-			elif(type == 'SIB'):
-				# Sibling cases should have the left one first, hence switch
-				if(node.pos > other.pos):
-					node, other = other, node
-				# Word will have trailing comma, so it cannot have comma behind it
-				parent = node.parent
-				# Remove if parent is punctuation
-				#if(parent.dependency == WordTree.punctuation_dep):
-					# punctuation node, discarding cases
-				#	continue
-				parentVectorString = getStringFromVector(wordDict.get(parent.word, wordDefaultKey))
-				oneVectorString = getStringFromVector(wordDict.get(node.word, wordDefaultKey))
-				otherVectorString = getStringFromVector(wordDict.get(other.word, wordDefaultKey))
-				# onePos, otherPos, oneVector, onePosTagId, oneDependencyTagId, oneParentDistance,
-				# otherVector, otherPosTagId, otherDependencyTagId, otherParentDistance,
-				# parentVector, parentPosTagId, class
-				try:
-					fileoutsib.write("{}, {}, {} {}, {}, {}, {} {}, {}, {}, {} {}, {}, {}\n".format(node.pos, other.pos,
-						oneVectorString, posTag[node.tag], dependencyTag[node.dependency], getDistance(node),
-						otherVectorString, posTag[other.tag], dependencyTag[other.dependency], getDistance(other),
-						parentVectorString, posTag[parent.tag],
-						getPunctuationInBetween(other, node), 1 if(switch) else 0))
-				except KeyError:
-					print("KeyError, list: {} {} {} {} {}".format(node.tag, node.dependency, other.tag, other.dependency, parent.tag))
-					print("KeyError, exist: {} {} {} {} {}".format(node.tag in posTag, node.dependency in dependencyTag, other.tag in posTag, other.dependency in dependencyTag, parent.tag in posTag))
-			
-	
-	fileoutpac.close()
-	fileoutsib.close()
-
-def createFormatModel(numChild, separator):
+def createFormatModel(numChild, separator, handlerFunctionDict=None, arffMode=False):
 	numTags = 2 * numChild + 1
 	modelString = ["{}"] * numTags
 	modelString = separator.join(modelString)
 	# print("modelString: " + modelString)
+	if(arffMode or handlerFunctionDict):
+		assert handlerFunctionDict
+		tagHandler = handlerFunctionDict["tag"]
+		depHandler = handlerFunctionDict["dependency"]
+		posHandler = handlerFunctionDict["position"]
+		posSeparator = "-"
+		keySeparator = separator
+	else:
+		tagHandler = lambda x: x.tag
+		depHandler = lambda x: x.dependency
+		posHandler = lambda posString: posString
+		posSeparator = separator
+		keySeparator = ">"
 	
 	def modelFunction(formatString, node, listChild=None):
 		listChild = listChild or node.children
-		#allTags = [node.tag] + [child.tag for child in node.children] + [child.dependency for child in node.children]
-		allTags = [node.tag] + [f(child) for child in listChild for f in (lambda x: x.tag, lambda x:x.dependency)]
+		# allTags = [node.tag] + [f(child) for child in listChild for f in (lambda x: x.tag, lambda x:x.dependency)]
+		allTags = [tagHandler(node)] + [f(child) for child in listChild for f in (tagHandler, depHandler)]
 		assert len(allTags) == numTags, "allTags: {} != numTags {}".format(allTags, numTags)
 		return formatString.format(*allTags)
 		
 	def modelValue(node, alignment, listChild=None):
 		listChild = listChild or node.children
-		norminal_positioned = [node] + listChild
-		old_positioned = sorted(norminal_positioned, key=lambda x: x.pos)
-		align_positioned = sorted(norminal_positioned, key=lambda x: alignment[x.pos] if(x.pos in alignment) else x.pos)
+		norminalPos = [node] + listChild
 		
-		key = separator.join([str(norminal_positioned.index(n)) for n in old_positioned])
-		value = separator.join([str(norminal_positioned.index(n)) for n in align_positioned])
-		return key + '>' + value
+		# if arff mode, it is 0-1-2-3, 2-0-1-3; if not, it is 0-1-2-3>2-0-1-3
+		oldPos = sorted(norminalPos, key=lambda x: x.pos)
+		key = posSeparator.join([str(norminalPos.index(n)) for n in oldPos])
+		if(alignment is not None):
+			# with alignment, create training data file
+			alignPos = sorted(norminalPos, key=lambda x: alignment[x.pos] if(x.pos in alignment) else x.pos)
+			value = posSeparator.join([str(norminalPos.index(n)) for n in alignPos])
+		else:
+			# no alignment, create query model file
+			value = "?"
+		return posHandler(key) + keySeparator + posHandler(value)
 	
 	return modelString, modelFunction, modelValue
 	
@@ -875,9 +798,140 @@ def splitChildrenByPunctuation(children, keepPunct=False):
 	
 	return splittedList
 
+def tagChecker(treeList, tagDict, depDict, unknownTagName="UNK"):
+	tagCounter = set()
+	depCounter = set()
+	def count(node):
+		tag, dep = node.tag, node.dependency
+		tagCounter.add(tag)
+		depCounter.add(dep)
+	
+	for tree in treeList:
+		recursiveRun(count, tree)
+	
+	if(any( (tag for tag in tagCounter if tag not in tagDict) )):
+		print("Unknown tag detected. Adding unknownTagName ({:s}) to tagDict at {:d}".format(unknownTagName, len(tagDict)))
+		tagDict[unknownTagName] = len(tagDict)
+		tagCounter.add(unknownTagName)
+	if(any( (dep for dep in depCounter if dep not in depDict) )):
+		print("Unknown dep detected. Adding unknownTagName ({:s}) to depDict at {:d}".format(unknownTagName, len(depDict)))
+		depDict[unknownTagName] = len(depDict)
+		depCounter.add(unknownTagName)
+	# filter only the used tag
+	newTagDict = {tag: idx for tag, idx in tagDict.items() if tag in tagCounter}
+	newDepDict = {dep: idx for dep, idx in depDict.items() if dep in depCounter}
+	return newTagDict, newDepDict
+
+def writeArffAttribute(stream, name, attrType="NUMERIC", separator=","):
+	if(isinstance(attrType, dict)):
+		# format the dict as class
+		attrType = "{" + separator.join(["{:s}".format(key) for key in attrType]) + "}"
+	stream.write("@ATTRIBUTE {:s} {:s}\n".format(name, attrType))
+
+def createArffDataByModelType(output, numChild, treeList, alignmentList, tagAndDepDict, splitByPunctuation=False, separator=",", intMode=True, unknownTagName="UNK"):
+	newTagDict, newDepDict = tagAndDepDict
+	# create all mutable positions according to numChild, and stringify them
+	# as it is parent + child, add 1 to the perm
+	allPositions = itertools.permutations(range(numChild + 1))
+	allPositions = ("-".join( (str(idx) for idx in pos) ) for pos in allPositions)
+	# if in int mode, create corresponding integers
+	if(intMode):
+		tagDict = {k:str(i) for i, k in enumerate(newTagDict.keys())}
+		depDict = {k:str(i) for i, k in enumerate(newDepDict.keys())}
+		posDict = {k:str(i) for i, k in enumerate(allPositions)}
+	else:
+		tagDict = {k:k for k in newTagDict.keys()}
+		depDict = {k:k for k in newDepDict.keys()}
+		posDict = {k:k for k in allPositions}
+
+	# write headers
+	if(intMode):
+		# In integer mode, write the tags/dep as comment
+		tagString = "%POSTags: " + ", ".join("{:s}({:s})".format(key, idx) for key, idx in tagDict.items()) + "\n"
+		depString = "%DependencyTag: " + ", ".join("{:s}({:s})".format(key, idx) for key, idx in depDict.items()) + "\n"
+		posString = "%Position permutations: " + ", ".join("{:s}({:s})".format(key, idx) for key, idx in posDict.items()) + "\n"
+		output.write(tagString + depString + posString + "\n")
+		# Write all as numeric options
+		output.write("@RELATION Model-integer\n")
+		writeArffAttribute(output, "POS-P")
+		for i in range(numChild):
+			writeArffAttribute(output, "POS-{:d}".format(i))
+			writeArffAttribute(output, "DEP-{:d}".format(i))
+		writeArffAttribute(output, "OLD")
+		writeArffAttribute(output, "NEW")
+	else:
+		# in default mode, leave them as class
+		output.write("@RELATION Model-class\n")
+		writeArffAttribute(output, "POS-P", attrType=tagDict, separator=separator)
+		for i in range(numChild):
+			writeArffAttribute(output, "POS-{:d}".format(i), attrType=tagDict, separator=separator)
+			writeArffAttribute(output, "DEP-{:d}".format(i), attrType=depDict, separator=separator)
+		writeArffAttribute(output, "OLD", attrType=posDict, separator=separator)
+		writeArffAttribute(output, "NEW", attrType=posDict, separator=separator)
+
+	# if without alignment, add '?' to posDict
+	if(alignmentList is None):
+		posDict['?'] = '?'
+	# get the node write func
+	indexDict = tagDict, depDict, posDict
+	nodeWriteFunction = writeToArffOutput(output, numChild, indexDict, unknownTagName=unknownTagName, splitByPunctuation=splitByPunctuation, separator=separator)
+	# iterate through the data
+	zippedData = zip(treeList, alignmentList) if alignmentList is not None else treeList
+	# write data separator unit
+	output.write("\n@DATA\n")
+	for data in zippedData:
+		if(alignmentList is not None):
+			tree, alignmentDict = data
+		else:
+			tree = data
+			alignmentDict = None
+		nodeWrite = lambda node: nodeWriteFunction(node, alignmentDict)
+		# run recursive
+		recursiveRun(nodeWrite, tree)
+		# free memory by delete tree
+		deleteTree(tree)
+	
+def writeToArffOutput(output, numChild, indexDict, unknownTagName=None, splitByPunctuation=False, separator=",", useOversize=True):
+	# assume tag/dep dict is the tag-to-idx and dep-to-idx dictionary
+	tagDict, depDict, posDict = indexDict
+	if(unknownTagName):
+		tagDefaultIdx, depDefaultIdx = tagDict.get(unknownTagName, None), depDict.get(unknownTagName, None)
+		queryTag, queryDep = lambda node: tagDict.get(node.tag, tagDefaultIdx), lambda node: depDict.get(node.dependency, depDefaultIdx) 
+	else:
+		queryTag, queryDep = lambda tag: tagDict[node.tag], lambda dep: depDict[node.dependency]
+	queryPos = lambda pos: posDict[pos]
+	handlerFunctionDict = {"tag":queryTag, "dependency":queryDep, "position":queryPos}
+
+	# node-to-string function
+	nodeFormatString, nodeStringFunc, positionFunc = createFormatModel(numChild, separator, handlerFunctionDict=handlerFunctionDict, arffMode=True)
+	
+	acceptable = lambda group: len(group) == numChild or (len(group) > numChild and useOversize)
+	def writeNodeToOutput(node, alignmentDict):
+		# check children fit the criteria
+		if(splitByPunctuation):
+			goodGroup = [group for group in splitChildrenByPunctuation(node.children) if acceptable(group)]
+		elif(acceptable(node.children)):
+			goodGroup = [node.children]
+		else:
+			return
+		# if oversize, split to sublist size numChild
+		if(useOversize):
+			splittedGroup = []
+			for group in goodGroup:
+				subGroupIndexes = range(len(group) - numChild)
+				splittedGroup.extend([group[i:i+numChild] for i in subGroupIndexes])
+			# override the goodGroup
+			goodGroup = splittedGroup
+		# if fit, use nodeStringFunc and positionFunc to write to output
+		for group in goodGroup:
+			nodeString = nodeStringFunc(nodeFormatString, node, listChild=group)
+			positionString = positionFunc(node, alignmentDict, listChild=group)
+			output.write(nodeString + separator + positionString + "\n")
+	# return the processor function
+	return writeNodeToOutput
 
 def addTreeRelationByModelType(numChild, tree, alignmentDict, fullRelationDict, splitByPunctuation=False, separator = '_'):
-	modelString, modelKeyFunction, modelValue= createFormatModel(numChild, separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
+	modelString, modelKeyFunction, modelValue = createFormatModel(numChild, separator) # = "PAC" + separator + "%s" + separator + "%s" + separator + "%s"
 	def tryAddingAllForMode(node):
 		if(splitByPunctuation):
 			listChildGroup = splitChildrenByPunctuation(node.children)
@@ -899,15 +953,18 @@ def addTreeRelationByModelType(numChild, tree, alignmentDict, fullRelationDict, 
 def createRelationDataByModelType(numChild, treeList, alignmentList, splitByPunctuation=False):
 	allRelationDict = {}
 	
-	for caseIdx in range(len(alignmentList)):
-		tree = next(treeList)
+	for caseIdx, alignment in enumerate(alignmentList):
+		try:
+			print(caseIdx)
+			tree = next(treeList)
+		except StopIteration:
+			raise Exception("Mismatch between alignment and tree: Not enough tree. Please recheck the source.\nIteration stopped @tree {:d}".format(caseIdx))
 		# tree = treeList[caseIdx]
-		alignment = alignmentList[caseIdx]
+		# alignment = alignmentList[caseIdx]
 		allRelationDict = addTreeRelationByModelType(numChild, tree, alignment, allRelationDict, splitByPunctuation=splitByPunctuation)
 		deleteTree(tree)
 	
 	return allRelationDict
-	
 
 def recordDepTagRelation(tree, alignmentDict, fullRelationDict, separator='_'):
 	depString = separator.join(["{}"] * 2)
@@ -1352,12 +1409,16 @@ def writeAllModelRelationToFile(numChild, outputdir, fullRelationDict, writePerc
 			del totalDict
 	openedFile.close()
 	
-def createIterableByMode(mode, inputdir, extension, timer):
+def createIterableByMode(mode, inputdir, extension, timer, alignmentAvailable=True):
 	if(mode == 'stanford'):
 		treeList, alignmentList = runStanfordParser(inputdir, extension)
 		print("Done for @StanfordParser, time passed %.2fs" % (time.time() - timer))
 	elif(mode == 'conll'):
-		treeList, alignmentList = runConllParser(inputdir, extension)
+		if(alignmentAvailable):
+			treeList, alignmentList = runConllParser(inputdir, extension)
+		else:
+			treeList = runConllParser(inputdir, extension, alignExtension=None)
+			alignmentList = None
 		print("Done for @ConllParser, time passed %.2fs" % (time.time() - timer))
 	else:
 		raise argparse.ArgumentTypeError("Incorect mode, must be stanford|conll")
@@ -1392,6 +1453,7 @@ if __name__ == "__main__":
 	parser.add_argument('--debug', action='store_true', help='print debug information to both terminal and file, currently dep only')
 	parser.add_argument('--injection_dep', action='store_true', help='use injection scheme for dep instead of greedy')
 	parser.add_argument('--bracket_size', type=int, default=5, help='the minimum brackets for bracketPreferedSize, 1 to do best, default 5, dep onlt')
+	parser.add_argument('--arff_int_mode', action='store_true', help='if enabled, write the arff data file in converted integer instead of nominal classes')
 	args = parser.parse_args()
 	# args.tagdir = "all_tag.txt"
 	# args.embedding_word = "data\syntacticEmbeddings\skipdep_embeddings.txt"
@@ -1403,7 +1465,7 @@ if __name__ == "__main__":
 		assert len(args.model_rule_threshold) == args.model_size, "Mismatched between rule_threshold and size: {} and {}".format(args.model_rule_threshold, args.model_size)
 
 	timer = time.time()
-	if(args.output_extension != 'model'):
+	if(args.output_extension != 'model' and args.output_extension != 'arff'):
 		treeList, alignmentList = createIterableByMode(args.mode, args.inputdir, args.parser_extension, timer)
 	
 	if(args.output_extension == 'txt'):
@@ -1412,23 +1474,23 @@ if __name__ == "__main__":
 		writeData(args.outputdir, allExamples)
 		print("Done for @writeData, time passed %.2fs" % (time.time() - timer))
 	elif(args.output_extension == 'arff'):
-		allExamples = createWritingData(treeList, alignmentList, False)
-		print("Done for @createWritingData, time passed %.2fs" % (time.time() - timer))
-		if(not args.full_load):
-			# Doing minimal (not load full wordDict)
-			refDict = createRefDictFromListTree(treeList)
-			refDict[args.default_word] = 1
-			wordDict = createMinimalWordDictFromFile(args.embedding_word, refDict)
-			print("Done for @creatingWordDict (minimal), time passed %.2fs" % (time.time() - timer))
-		else:
-			# Doing full load, not recommended for large file
-			wordDict = createWordDictFromFile(args.embedding_word)
-			print("Done for @creatingWordDict (full), time passed %.2fs" % (time.time() - timer))
-		tagDict = getTagFromFile(args.tagdir)
-		# WordLen is a random key's vector length
-		wordLen = len(wordDict[args.default_word])
-		print("Done for @creatingTagDict, time passed %.2fs" % (time.time() - timer))
-		writeDataArff(args.outputdir, allExamples, wordDict, wordLen, tagDict, args.default_word)
+		# arff is the only one using alignmentAvailable
+		alignmentFileExist = os.path.isfile(args.inputdir + ".align")
+		treeList, alignmentList = createIterableByMode(args.mode, args.inputdir, args.parser_extension, timer, alignmentAvailable=alignmentFileExist)
+		print("Alignment file {}, exist {}, alignmentList = {}".format(args.inputdir + ".align", alignmentFileExist, alignmentList))
+		tagDict, depDict = getTagFromFile(args.tagdir)
+		print("Raw tag processed, time passed %.2fs" % (time.time() - timer))
+		filteredTagAndDepDict = tagChecker(treeList, tagDict, depDict)
+		del alignmentList
+		print("Done filtering tag data, time passed %.2fs" % (time.time() - timer))
+		if(args.debug):
+			filteredTagDict, filteredDepDict = filteredTagAndDepDict
+			print("Before filtering: POSTag {:d}, dependency {:d}; after filtering: POSTag {:d}, dependency {:d}".format( len(tagDict), len(depDict), len(filteredTagDict), len(filteredDepDict) ))
+		for numChild in range(1, args.model_size + 1):
+			treeList, alignmentList = createIterableByMode(args.mode, args.inputdir, args.parser_extension, timer, alignmentAvailable=alignmentFileExist)
+			with io.open(args.outputdir + str(numChild) + "." + args.output_extension, "w", encoding="utf8") as arffFile:
+				createArffDataByModelType(arffFile, numChild, treeList, alignmentList, filteredTagAndDepDict, splitByPunctuation=args.split_by_punctuation, intMode=args.arff_int_mode)
+			print("Done for @createArffDataByModelType(model child=%d), time passed %.2fs" % (numChild, time.time() - timer))
 		print("Done for @writeDataArff, time passed %.2fs" % (time.time() - timer))
 	elif(args.output_extension == 'rule'):
 		allRelation = createRelationData(treeList, alignmentList)

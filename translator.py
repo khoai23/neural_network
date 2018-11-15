@@ -892,7 +892,7 @@ if __name__ == "__main__":
 		# create random idx to print a sample consistently during evaluation
 		rIdx1, rIdx2 = np.random.randint(len(sample[2]), size=2)
 		endTokenId = tgtWordToId[args.end_token]
-		def lookup(seq, ldict):
+		def lookup(seq, ldict=tgtIdToWord):
 			return " ".join([ldict[item] for item in seq])
 		def evaluationFunction(extraArgs):
 			iteration, losses, prevBest = extraArgs
@@ -901,7 +901,7 @@ if __name__ == "__main__":
 			viewSet = [[trainInput[i], trainResult[i], inferResult[i], correctOutput[i]] for i in (rIdx1, rIdx2) ]
 			# this parser kinda screw the training input since it is tgt's endTokenId
 			viewSet = [[stripResultArray(item, endTokenId) for item in subSet] for subSet in viewSet]
-			viewSet = ["INPUT: {}[{}]\nTRAIN: {}[{}]\nINFER: {}[{}]\nCORRECT: {}[{}]".format(inp, lookup(inp, srcIdToWord), tres, lookup(tres, tgtIdToWord), ires, lookup(ires, tgtIdToWord), cor, lookup(cor, tgtIdToWord)) for inp, tres, ires, cor in viewSet]
+			viewSet = ["INPUT: {}[{}]\nTRAIN: {}[{}]\nINFER: {}[{}]\nCORRECT: {}[{}]".format(inp, lookup(inp), tres, lookup(tres), ires, lookup(ires), cor, lookup(cor)) for inp, tres, ires, cor in viewSet]
 			viewSet = "\n-----------------------\n".join(viewSet)
 			print(viewSet)
 			trainResult = calculateBleu(correctOutput, trainResult, trimLength)

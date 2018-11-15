@@ -1,5 +1,178 @@
 import tensorflow as tf
 
+def _default_printer(*args):
+	print(args)
+
+def optimizeLossClean(train_logits, correct_ids, correct_output_length, optimizer="SGD", learning_rate=1.0, decay_fn=None, clip_gradients=5.0, name="optimizer"):
+	"""Create the optimize loss operator
+		Args:
+			...
+		Returns:
+			tuple of loss(scalar tensor) and train_op (tensorflow operation). train_op should already had increment global_step
+	"""
+	with tf.variable_scope(name):
+		# entropy is [batch_size, tgt_len]
+		entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_logits, labels=correct_ids, name="entropy")
+		max_tgt_length = tf.shape(entropy)[1]
+		with tf.control_dependencies([tf.assert_equal(max_tgt_length, tf.reduce_max(correct_output_length))]):
+			# mask away the padding tokens
+			mask = tf.sequence_mask(correct_output_length, maxlen=max_tgt_length, dtype=entropy.dtype, name="loss_mask")
+			loss = entropy * mask
+		# reduce to sentence loss (train) and word loss (token)
+		loss = tf.reduce_sum(loss)
+		token_loss = loss / tf.cast(tf.reduce_sum(correct_output_length), loss.dtype)
+		train_loss = loss / tf.cast(tf.shape(correct_output_length)[0], loss.dtype)
+		global_step = tf.train.get_or_create_global_step()
+		return train_loss, token_loss, tf.contrib.layers.optimize_loss(train_loss, global_step, learning_rate, optimizer, learning_rate_decay_fn=decay_fn, clip_gradients=clip_gradients, name="backprop_op")
+
+def getOrCreateEmbedding(name, create=False, vocab_size=None, num_units=None):
+	"""Get or create an embedding function converting ids to embedding
+		Args:
+			name: the name of the embedding
+			create: if true, create the embedding with certainty
+			vocab_size+num_units: the vocab an size of the embedding
+		Returns:
+			A lookup callable converting ids to embedding
+	"""
+	with tf.variable_scope("embeddings", reuse=not create):
+		embedding = tf.get_variable(name, shape=[vocab_size, num_units] if create else None, initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1))
+	return lambda x: tf.nn.embedding_lookup(embedding, x)
+
+def createEncoderClean(embedded_inputs, cell_size=512, cell_type=tf.nn.rnn_cell.BasicLSTMCell, num_layers=2, created_dropout=None, bidirectional=True, printer=_default_printer, name='encoder', concat_mode=False):
+	"""Create an encoder (bi/uni)
+		Args: 
+			embedded_inputs: the embeddings of sentences, already in [batch_size, src_len, embedding_size]
+			name: the name to use the scope in
+			..: self explanatory
+		Returns:
+			Tuple of outputs [batch_size, src_len, embedding_size] and last encoder state (tuple|LSTMStateTuple)
+	"""
+	printer("Constructing encoder with setting values: {}".format(locals()))
+	with tf.variable_scope(name):
+		# Check for dropout, create a placeholder if not yet created
+		dropout = created_dropout
+		if(not isinstance(dropout, tf.Tensor)):
+			raise ValueError('Dropout in wrong type, not tf.Tensor|tf.Operation|number: {:s}'.format(created_dropout))
+		# Construct the necessary encoder
+		if(bidirectional):
+			# if concat, split by cell_size; if stack, split by layers
+			if(concat_mode):
+				raise NotImplementedError("Concat mode not yet supported by base tf")
+				if(cell_size % 2 != 0):
+					raise ValueError("(CONCAT) Bidirectional network must have an even number of hidden units: {}".format(cell_size))
+				cell_size = cell_size // 2
+			else:
+				if(num_layers % 2 != 0):
+					raise ValueError("(STACK) Bidirectional network must have an even number of layers: {}".format(num_layers))
+				num_layers = num_layers // 2
+			
+			forward_cell = createRNNCell(cell_type, cell_size, num_layers, dropout=dropout, name='forward_cell')
+			backward_cell = createRNNCell(cell_type, cell_size, num_layers, dropout=dropout, name='backward_cell')
+			
+			outputs, state = tf.nn.bidirectional_dynamic_rnn(forward_cell, backward_cell, embedded_inputs, dtype=tf.float32)
+			# this is stack mode
+			outputs = tf.concat(outputs, -1)
+			if(num_layers != 1):
+				# with num_layers = 1, state is at correct shape and doesn't need to change
+				state = state[0] + state[1]
+		else:
+			cell = createRNNCell(cell_type, cell_size, num_layers, dropout=dropout, name='rnn_cell')
+			
+			outputs, state = tf.nn.dynamic_rnn(cell, inputs, dtype=tf.float32)
+		return outputs, state
+
+def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=None, projection_layer=None, encoder_outputs=None, encoder_length=None, cell_size=512, cell_type=tf.nn.rnn_cell.BasicLSTMCell, num_layers=2, created_dropout=None, attention_mechanism=None, printer=_default_printer, name='decoder', variable_scope_reuse=False, beam_size=1, training=False, end_token=None, maximum_iterations=250):
+	"""Create a decoder with or without attention and beam
+		If using attention, encoder_outputs and encoder_length required as tensor [batch_size, src_len, embedding_size] and [batch_size]
+		If want to train|eval, set training=True and inputs is the correct inputs of the whole sentence; inputs_length required
+		If want to infer, set training=False and inputs is the starting [batch_size] of start_token; embedding_fn, beam_size, end_token required
+	Args: 
+			projection_layer: Required in all, convert cell output to probs
+			inputs: see above
+			variable_scope_reuse: set if this function had ran before
+			training: set if in training mode
+			attention mechanism: callable that create an attention object in which AttentionWrapper can use to create an attention cell
+			..: self explanatory
+		Returns:
+			Tuple of outputs [batch_size, src_len, embedding_size] and last encoder state (tuple|LSTMStateTuple)
+	"""
+	printer("Constructing decoder with setting values: {}".format(locals()))
+	assert projection_layer is not None and callable(projection_layer), "projection_layer must be able to project cell output to probs"
+	if(not training):
+		assert embedding_fn and callable(embedding_fn), "If not in training mode, must have the embedding function to do sequential decode"
+		assert end_token is not None, "Must have a valid end_token value"
+	else:
+		assert inputs_length is not None, "Must have inputs_length in training"
+
+	with tf.variable_scope(name, reuse=variable_scope_reuse):
+		# construct cell
+		cell = createRNNCell(cell_type, cell_size, num_layers, dropout=created_dropout, name='rnn_cell')
+		if(attention_mechanism):
+			assert callable(attention_mechanism), "Attention mechanism must be callable!"
+			assert encoder_outputs is not None and encoder_length is not None, "Attention must have outputs and length!"
+			# create the attention mechanism using the outputs and lengths
+			if(not training and beam_size > 1):
+				# tile the encoder states and outputs
+				encoder_state = tf.contrib.seq2seq.tile_batch(encoder_state, multiplier=beam_size)
+				encoder_outputs = tf.contrib.seq2seq.tile_batch(encoder_outputs, multiplier=beam_size)
+				encoder_length = tf.contrib.seq2seq.tile_batch(encoder_length, multiplier=beam_size)
+			attention = attention_mechanism(cell_size, encoder_outputs, encoder_length)
+			# wrap the cell with the created attention
+			cell = tf.contrib.seq2seq.AttentionWrapper(cell, attention, initial_cell_state=encoder_state, attention_layer_size=cell_size, name="attention_wrapper", alignment_history=True)
+			# the AttentionWrapper cell will create additional starter state in zero_state
+			batch_size = tf.shape(encoder_outputs)[0]
+			initial_state = cell.zero_state(batch_size, dtype=encoder_outputs.dtype)
+		else:
+			initial_state = encoder_state
+		# initiate the decoding
+		if(training):
+			# Training decoder
+			helper = tf.contrib.seq2seq.TrainingHelper(inputs, inputs_length)
+			decoder = tf.contrib.seq2seq.BasicDecoder(cell, helper, initial_state)
+			# run the dynamic decode
+			outputs, final_state, final_length = tf.contrib.seq2seq.dynamic_decode(decoder)
+			unprojected_logits = outputs.rnn_output
+			return { 
+				"logits": projection_layer(unprojected_logits), 
+				"state": final_state, 
+				"length": final_length 
+			}
+		elif(beam_size == 1):
+			start_tokens = inputs
+			# GreedyEmbeddingDecoder
+			helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(embedding_fn, start_tokens, end_token)
+			decoder = tf.contrib.seq2seq.BasicDecoder(cell, helper, initial_state, output_layer=projection_layer)
+			# run the dynamic decode
+			outputs, final_state, final_length = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
+			predictions = outputs.sample_id
+			alignment_history = final_state.alignment_history if attention_mechanism else None
+			return {
+				"predictions": tf.expand_dims(predictions, -1),
+				"state": final_state,
+				"length": tf.expand_dims(final_length, -1),
+				"log_probs": tf.expand_dims(final_state.log_probs, -1),
+				"alignment_history": alignment_history
+			}
+		else:
+			# tile the inputs and run the BeamSearchDecoder
+			start_tokens = tf.contrib.seq2seq.tile_batch(inputs, multiplier=beam_size)
+			decoder = tf.contrib.seq2seq.BeamSearchDecoder(cell, embedding_fn, start_tokens, end_token, initial_state, beam_size, output_layer=projection_layer)
+			outputs, final_state, final_length = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
+			# get the necessary values
+			predictions = outputs.predicted_ids
+			alignment_history = final_state.alignment_history if attention_mechanism else None
+			if(alignment_history):
+				batch_size = tf.shape(inputs)[0]
+				src_len = tf.shape(encoder_outputs)[1]
+				alignment_history = tf.reshape(alignment_history, [batch_size, beam_size, -1, src_len])
+			return {
+				"predictions": tf.transpose(predictions, perm=[0, 2, 1]),
+				"state": final_state,
+				"length": final_length,
+				"log_probs": final_state.log_probs,
+				"alignment_history": alignment_history
+			}
+
 def createRandomArray(size):
 	if(not isinstance(size, tuple) and not isinstance(size, list)):
 		# incorrect shape, creating
@@ -154,7 +327,7 @@ def createCustomizedSession(settingDict):
 	else:
 		return sess, train_op, prediction, training_inputs, training_outputs
 
-def createEncoder(settingDict):
+def createEncoder(settingDict, printer=_default_printer):
 	prefix = settingDict.get('prefix', 'encoder')
 	cellType = settingDict.get('cellType', 'lstm')
 	forgetBias = settingDict.get('forgetBias', 0.5)
@@ -163,9 +336,10 @@ def createEncoder(settingDict):
 	layerDepth = settingDict.get('layerDepth', 2)
 	# trainingRate = settingDict.get('trainingRate', 1.0)
 	# learningDecay = settingDict.get('learningDecay', None)
-	bidirectional = settingDict.get('bidirectional', False)
+	bidirectional = settingDict.get('bidirectional', True)
 	inputType = settingDict.get('inputType', 'default')
 	inputSize = settingDict['inputSize']
+	printer("Constructing encoder with setting values: {}".format(locals()))
 	
 	# CellType selection here
 	cellType = tf.contrib.rnn.BasicLSTMCell
@@ -185,8 +359,8 @@ def createEncoder(settingDict):
 			raise Exception("Bidirectional network must have an even number of layers")
 		layerDepth = layerDepth // 2
 		
-		forwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_forward')
-		backwardLayers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_backward')
+		forwardLayers = createRNNCell(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_forward')
+		backwardLayers = createRNNCell(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_backward')
 		
 		outputs, state = tf.nn.bidirectional_dynamic_rnn(forwardLayers, backwardLayers, inputs, dtype=tf.float32)
 		outputs = tf.concat(outputs, -1)
@@ -199,13 +373,13 @@ def createEncoder(settingDict):
 		#		allState.extend((state[0][i], state[1][i]))
 		#	state = tuple(allState)
 	else:
-		layers = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
+		layers = createRNNCell(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 		
 		outputs, state = tf.nn.dynamic_rnn(layers, inputs, dtype=tf.float32)
 		
 	return inputs, outputs, state, dropout
 	
-def createDecoder(settingDict):
+def createDecoder(settingDict, printer=_default_printer):
 	prefix = settingDict.get('prefix', 'decoder')
 	# isBareMode = settingDict.get('mode', True)
 	# the batchSize/maximumDecoderLength must be a placeholder that is filled during inference
@@ -220,6 +394,7 @@ def createDecoder(settingDict):
 	layerSize = settingDict.get('layerSize', decoderOutputSize)
 	layerDepth = settingDict.get('layerDepth', 2)
 	beamSize = settingDict.get('beamSize', 1)
+	printer("Constructing decoder with setting values: {}".format(locals()))
 	
 	assert correctResult is not None
 	# the training input append startToken id to the front of all training sentences 
@@ -255,7 +430,7 @@ def createDecoder(settingDict):
 	# Dropout must be a placeholder/operation by now, as encoder will convert it
 	assert isinstance(dropout, (tf.Operation, tf.Tensor)) and isinstance(correctResult, (tf.Operation, tf.Tensor))
 	# Decoder construction here
-	decoderCells = createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
+	decoderCells = createRNNCell(cellType, layerSize, layerDepth, forgetBias, dropout=dropout, name=prefix+'_rnn')
 	if(attentionMechanism is not None):
 		if(beamSize > 1):
 			# create a beam cell wrapped by a batched mechanism first, before resubtituing
@@ -398,15 +573,15 @@ def createSoftmaxDecoderLossOperation(logits, correctIds, sequenceLengthList, ba
 	loss = tf.reduce_sum(tf.multiply(crossent, target_weights, name="crossent")) / tf.to_float(batchSize)
 	return loss, target_weights
 	
-def createRNNLayers(cellType, layerSize, layerDepth, forgetBias, dropout=None, name='RNN'):
+def createRNNCell(cellType, layerSize, layerDepth, dropout=None, name='RNN'):
 	layers = []
 	for i in range(layerDepth):
-		cell = cellType(layerSize, forget_bias=forgetBias, name=name)
+		cell = cellType(layerSize, name=name)
 		if(dropout is not None):
 			cell = tf.contrib.rnn.DropoutWrapper(cell=cell, input_keep_prob=dropout)
 		layers.append(cell)
 		
-	return tf.contrib.rnn.MultiRNNCell(layers)
+	return tf.contrib.rnn.MultiRNNCell(layers) if layerDepth > 1 else layers[0]
 	
 class CustomGreedyEmbeddingHelper(tf.contrib.seq2seq.GreedyEmbeddingHelper):
 	# Current GreedyEmbeddingHelper is getting the argmax value as id to be fed into the next time step
