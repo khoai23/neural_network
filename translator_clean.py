@@ -179,7 +179,7 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='Run RNN.')
 	args = parser.parse_args([])
 	args.mode = "train"
-	args.run_dir = "/home/quan/Workspace/Data/iwslt15"
+	args.run_dir = sys.argv[1] #/home/quan/Workspace/Data/iwslt15
 	args.file_name = "train"
 	args.src = "en"
 	args.tgt = "vi"
