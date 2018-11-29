@@ -1,4 +1,5 @@
 import tensorflow as tf
+import os
 
 def _default_printer(*args):
 	print(args)
@@ -76,7 +77,7 @@ def createEncoderClean(embedded_inputs, cell_size=512, cell_type=tf.nn.rnn_cell.
 				# with num_layers = 1, state is at correct shape and doesn't need to change
 				state = state[0] + state[1]
 		else:
-			cell = createRNNCell(cell_type, cell_size, num_layers, dropout=dropout, name='rnn_cell')
+			cell = createRNNCell(cell_type, cell_size, num_layers, dropout=dropout, name='encoder_cell')
 			
 			outputs, state = tf.nn.dynamic_rnn(cell, inputs, dtype=tf.float32)
 		return outputs, state
@@ -97,7 +98,6 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 			Tuple of outputs [batch_size, src_len, embedding_size] and last encoder state (tuple|LSTMStateTuple)
 	"""
 	printer("Constructing decoder with setting values: {}".format(locals()))
-	assert projection_layer is not None and callable(projection_layer), "projection_layer must be able to project cell output to probs"
 	if(not training):
 		assert embedding_fn and callable(embedding_fn), "If not in training mode, must have the embedding function to do sequential decode"
 		assert end_token is not None, "Must have a valid end_token value"
@@ -105,6 +105,9 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 		assert inputs_length is not None, "Must have inputs_length in training"
 
 	with tf.variable_scope(name, reuse=variable_scope_reuse):
+		print("Overriding a projection layer inside namescope. Damn")
+	# with tf.variable_scope("projection", reuse=tf.AUTO_REUSE):
+		projection_layer = tf.layers.Dense(len(tgt_vocab), use_bias=False, name="decoder_projection_layer")
 		# construct cell
 		cell = createRNNCell(cell_type, cell_size, num_layers, dropout=created_dropout, name='rnn_cell')
 		if(attention_mechanism):
@@ -118,7 +121,7 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 				encoder_length = tf.contrib.seq2seq.tile_batch(encoder_length, multiplier=beam_size)
 			attention = attention_mechanism(cell_size, encoder_outputs, encoder_length)
 			# wrap the cell with the created attention
-			cell = tf.contrib.seq2seq.AttentionWrapper(cell, attention, initial_cell_state=encoder_state, attention_layer_size=cell_size, name="attention_wrapper", alignment_history=True)
+			cell = tf.contrib.seq2seq.AttentionWrapper(cell, attention, initial_cell_state=encoder_state, attention_layer_size=cell_size, name="attention_wrapper", alignment_history=False)
 			# the AttentionWrapper cell will create additional starter state in zero_state
 			batch_size = tf.shape(encoder_outputs)[0]
 			initial_state = cell.zero_state(batch_size, dtype=encoder_outputs.dtype)
@@ -150,17 +153,20 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 				"predictions": tf.expand_dims(predictions, -1),
 				"state": final_state,
 				"length": tf.expand_dims(final_length, -1),
-				"log_probs": tf.expand_dims(final_state.log_probs, -1),
+				"log_probs": final_state,
 				"alignment_history": alignment_history
 			}
 		else:
 			# tile the inputs and run the BeamSearchDecoder
 			start_tokens = tf.contrib.seq2seq.tile_batch(inputs, multiplier=beam_size)
+			start_tokens = tf.Print(start_tokens, [tf.shape(start_tokens), tf.shape(encoder_state), tf.shape(encoder_outputs), tf.shape(encoder_length)])
 			decoder = tf.contrib.seq2seq.BeamSearchDecoder(cell, embedding_fn, start_tokens, end_token, initial_state, beam_size, output_layer=projection_layer)
 			outputs, final_state, final_length = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
 			# get the necessary values
 			predictions = outputs.predicted_ids
-			alignment_history = final_state.alignment_history if attention_mechanism else None
+			print("Alignment history not available currently")
+#			alignment_history = final_state.alignment_history if attention_mechanism else Nonea
+			alignment_history = None
 			if(alignment_history):
 				batch_size = tf.shape(inputs)[0]
 				src_len = tf.shape(encoder_outputs)[1]
@@ -644,15 +650,15 @@ def createHashDict(hashType, keyValueTensorOrTypeTuple=None, defaultValue=-1, in
 		table = tf.contrib.lookup.MutableHashTable(key_dtype=keyType, value_dtype=valueType, default_value=defaultValue)
 		return inputTensor, table.lookup(inputTensor)
 
-def createEmbeddingSessionCBOW(dictSize, embeddingSize, inputSize=1, batch_size=512, trainingRate=1.0, existedSession=None, useNceLosses=True, numSample=9):
+def createEmbeddingSessionCBOW(dictSize, embeddingSize, inputSize=1, trainingRate=1.0, existedSession=None, useNceLosses=True, numSample=9):
 	# if use nce, create a lookup matrix and use default nce_loss function from tensorflow
-	training_inputs = tf.placeholder(tf.int32, shape=[batch_size, inputSize])
-	training_outputs = tf.placeholder(tf.int32, shape=[batch_size, 1])
+	training_inputs = tf.placeholder(tf.int32, shape=[None, inputSize])
+	training_outputs = tf.placeholder(tf.int32, shape=[None])
 	embeddings = tf.Variable(initial_value=createRandomArray((dictSize, embeddingSize)), dtype=tf.float32, name="E")
 	embed = tf.nn.embedding_lookup(embeddings, training_inputs)
 	# tensor is being properly squashed from [batch_size, embeddingSize, inputSize] into [batch_size, embeddingSize*inputSize]
 	#embed = tf.div(tf.reduce_sum(embed, 1), inputSize)
-	embed = tf.reshape(embed, [batch_size, embeddingSize*inputSize])
+	embed = tf.reshape(embed, [-1, embeddingSize*inputSize])
 
 	# Construct the variables for the NCE loss
 	nce_weights = tf.Variable(initial_value=createRandomArray((dictSize, embeddingSize*inputSize)), dtype=tf.float32, name="EW")
@@ -661,30 +667,26 @@ def createEmbeddingSessionCBOW(dictSize, embeddingSize, inputSize=1, batch_size=
 	# Compute the average NCE loss for the batch.
 	# tf.nce_loss automatically draws a new sample of the negative labels each
 	# time we evaluate the loss.
+	extended_outputs = tf.expand_dims(training_outputs, -1)
 	loss = tf.reduce_mean(tf.clip_by_value(
-		tf.nn.nce_loss(weights=nce_weights,
-						biases=nce_biases,
-						labels=training_outputs,
-						inputs=embed,
-						num_sampled=numSample,
-						num_classes=dictSize),
-						1e-10, 100))
-	train_op = tf.train.GradientDescentOptimizer(trainingRate).minimize(loss)
+		tf.nn.nce_loss(weights=nce_weights, biases=nce_biases, labels=extended_outputs, inputs=embed, num_sampled=numSample, num_classes=dictSize), 1e-10, 100))
+	global_step = tf.train.get_or_create_global_step()
+	train_op = tf.contrib.layers.optimize_loss(loss, global_step, trainingRate, "SGD", clip_gradients=5.0, name="train_op")
 	
 	if(existedSession is None):
 		sess = tf.Session()
 	else:
 		sess = existedSession
 	
-	norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keep_dims=True))
+	norm = tf.sqrt(tf.reduce_sum(tf.square(embeddings), 1, keepdims=True))
 	normalized_embeddings = embeddings / norm
 	
 	return sess, [train_op, loss], training_inputs, training_outputs, (embeddings, normalized_embeddings)
 	
-def createEmbeddingSession(dictSize, embeddingSize, inputSize=1, batch_size=512, trainingRate=1.0, existedSession=None, useNceLosses=True, numSample=9):
+def createEmbeddingSession(dictSize, embeddingSize, inputSize=1, trainingRate=1.0, existedSession=None, useNceLosses=True, numSample=9):
 	# if use nce, create a lookup matrix and use default nce_loss function from tensorflow
-	training_inputs = tf.placeholder(tf.int32, shape=[batch_size, inputSize])
-	training_outputs = tf.placeholder(tf.int32, shape=[batch_size, 1])
+	training_inputs = tf.placeholder(tf.int32, shape=[None, inputSize])
+	training_outputs = tf.placeholder(tf.int32, shape=[None])
 	embeddings = tf.Variable(initial_value=createRandomArray((dictSize, embeddingSize)), dtype=tf.float32, name="E")
 	embed = tf.nn.embedding_lookup(embeddings, training_inputs)
 	# stopgap - tensor is being sum together
@@ -698,15 +700,11 @@ def createEmbeddingSession(dictSize, embeddingSize, inputSize=1, batch_size=512,
 	# Compute the average NCE loss for the batch.
 	# tf.nce_loss automatically draws a new sample of the negative labels each
 	# time we evaluate the loss.
+	extended_outputs = tf.expand_dims(training_outputs, -1)
 	loss = tf.reduce_mean(tf.clip_by_value(
-		tf.nn.nce_loss(weights=nce_weights,
-						biases=nce_biases,
-						labels=training_outputs,
-						inputs=embed,
-						num_sampled=numSample,
-						num_classes=dictSize),
-						1e-10, 100))
-	train_op = tf.train.GradientDescentOptimizer(trainingRate).minimize(loss)
+		tf.nn.nce_loss(weights=nce_weights, biases=nce_biases, labels=extended_outputs, inputs=embed, num_sampled=numSample, num_classes=dictSize), 1e-10, 100))
+	global_step = tf.train.get_or_create_global_step()
+	train_op = tf.contrib.layers.optimize_loss(loss, global_step, trainingRate, "SGD", clip_gradients=5.0, name="train_op")
 	
 	if(existedSession is None):
 		sess = tf.Session()
@@ -718,6 +716,49 @@ def createEmbeddingSession(dictSize, embeddingSize, inputSize=1, batch_size=512,
 	
 	return sess, [train_op, loss], training_inputs, training_outputs, (embeddings, normalized_embeddings)
 	
+def createEnlargeEmbeddingSession(originalWordVectors, dictSize, embeddingSize, inputSize=1, trainingRate=1.0, existedSession=None, useNceLosses=True, numSample=9, isCBOW=False):
+	original_dict_size = tf.convert_to_tensor(len(originalWordVectors), dtype=tf.int32)
+	# if use nce, create a lookup matrix and use default nce_loss function from tensorflow
+	training_inputs = tf.placeholder(tf.int32, shape=[None, inputSize])
+	training_outputs = tf.placeholder(tf.int32, shape=[None])
+	new_embeddings = tf.Variable(initial_value=createRandomArray((dictSize, embeddingSize)), dtype=tf.float32, name="E")
+	original_embeddings = tf.constant(originalWordVectors, name="O")
+	embeddings = tf.concat([original_embeddings, new_embeddings], axis=0)
+	embed = tf.nn.embedding_lookup(embeddings, training_inputs)
+	# stopgap - tensor is being sum together
+	#embed = tf.div(tf.reduce_sum(embed, 1), inputSize)
+	if(isCBOW):
+		cbow_layer = tf.layers.Dense(embeddingSize, dtype=embed.dtype, name="C-L")
+		embed = cbow_layer(embed)
+	else:
+		embed = tf.reduce_mean(embed, 1)
+
+	# Construct the variables for the NCE loss
+	nce_weights = tf.Variable(initial_value=createRandomArray((dictSize, embeddingSize)), dtype=tf.float32, name="EW")
+	nce_biases = tf.Variable(tf.zeros([dictSize]), dtype=tf.float32, name="EB")
+
+	# Compute the average NCE loss for the batch.
+	# tf.nce_loss automatically draws a new sample of the negative labels each
+	# time we evaluate the loss.
+	extended_outputs = tf.expand_dims(training_outputs, -1)
+	raw_loss = tf.clip_by_value(
+		tf.nn.nce_loss(weights=nce_weights, biases=nce_biases, labels=extended_outputs, inputs=embed, num_sampled=numSample, num_classes=dictSize), 1e-10, 100, name="L-C")
+	# mask the loss so the original embedding does not get gradient (all constants)
+	inputs_is_valid = tf.reduce_any(tf.math.less(training_inputs, original_dict_size), axis=-1, name="ML")
+	masked_loss = tf.where(inputs_is_valid, x=raw_loss, y=0, name="L-M")
+	global_step = tf.train.get_or_create_global_step()
+	train_op = tf.contrib.layers.optimize_loss(loss, global_step, trainingRate, "SGD", clip_gradients=5.0, name="train_op")
+	
+	if(existedSession is None):
+		sess = tf.Session()
+	else:
+		sess = existedSession
+	
+	norm = tf.sqrt(tf.reduce_sum(tf.square(new_embeddings), 1, keep_dims=True))
+	normalized_new_embeddings = new_embeddings / norm
+	
+	return sess, [train_op, loss], training_inputs, training_outputs, (new_embeddings, normalized_new_embeddings)
+
 def runTrainingForSession(session, varTuple, dataTuple, epoch=100):
 	if(len(dataTuple) == 0):
 		return
@@ -770,16 +811,28 @@ def runTest():
 	# saveToPath(session, 'C:\\Python\\data\\ff_test.ckpt')
 	session.close()
 
-def saveToPath(session, path):	
-	saver = tf.train.Saver()
-	saver.save(session, path)
+def saveToPath(session, path, global_step=None):
+	# add the saver into the session since it manipulate the checkpoint file
+	saver = tf.train.Saver() if not hasattr(session, "saver") else session.saver
+	saver.save(session, path, global_step=global_step)
+	print("Saved data to location {}, global step value {}".format(path, global_step))
+	session.saver = saver
 
 def loadFromPath(session, path):
-	saver = tf.train.Saver()
+	saver = tf.train.Saver() if not hasattr(session, "saver") else session.saver
 	try:
+		directory, file_name = os.path.split(path)
+		latest_path = tf.train.latest_checkpoint(directory, latest_filename="checkpoint")
+		if(latest_path == None):
+			print("Latest checkpoint not found, should abort to skip")
+		else:
+			path = latest_path
 		saver.restore(session, path)
+		print("Load data from location {} completed.".format(path))
 	except tf.errors.NotFoundError:
 		print("Skip the load process @ path {} due to file not existing.".format(path))
 	except ValueError:
 		print("Path {} not a valid checkpoint. Ignore and continue..".format(path))
+	session.saver = saver
 	return session
+

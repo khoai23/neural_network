@@ -75,10 +75,10 @@ def readTogether(inputdir, src, tgt, encoding='utf-8'):
 	result = []
 	if(len(source) != len(target) or len(target) != len(alignment)):
 		printError("Mismatched read size, 3 file: {}-{}-{}".format(len(source), len(target), len(alignment)))
-	for i in range(len(source)):
-		aligment_parsed = parseAlignmentFromString(alignment[i])
+	for src, tgt, ali in zip(source, target, alignment):
+		aligment_parsed = parseAlignmentFromString(ali)
 		score = scoreFromAlignmentArray(aligment_parsed)
-		result.append((source[i], target[i], alignment[i], score))
+		result.append((src, tgt, ali, score))
 		
 	return result
 	
@@ -95,10 +95,10 @@ def createScore(inputdir, src, tgt, encoding='utf-8'):
 	result = []
 	if(len(source) != len(target)):
 		printError("Mismatched read size, 2 file: {}-{}".format(len(source), len(target)))
-	for i in range(len(source)):
-		aligment_parsed = createAlignmentFromCouple(source[i], target[i])
+	for src, tgt in zip(source, target):
+		aligment_parsed = createAlignmentFromCouple(src, tgt)
 		score = scoreFromAlignmentArray(aligment_parsed)
-		result.append((source[i], target[i], aligment_parsed, score))
+		result.append((src, tgt, aligment_parsed, score))
 		
 	return result
 	
@@ -151,6 +151,14 @@ def writeTauOnly(outputdir, listResult, extension, writeFoundAlignment=False, en
 	
 	alignmentFile.close()
 
+def readAndScoreAlignment(inputdir, encoding="utf-8"):
+	alignmentFilePath = inputdir + ".align"
+	with io.open(alignmentFilePath, "r", encoding=encoding) as alignmentFile:
+		alignmentStrings = alignmentFile.readlines()
+		alignments = [parseAlignmentFromString(line) for line in alignmentStrings]
+		tauScores = (scoreFromAlignmentArray(alignment) for alignment in alignments)
+	return [(None, None, alignment, tau) for alignment, tau in zip(alignments, tauScores)]
+
 if __name__ == "__main__":
 	# Run argparse
 	parser = argparse.ArgumentParser(description='Scoring lines and separate them.')
@@ -160,24 +168,27 @@ if __name__ == "__main__":
 	parser.add_argument('--tgt', type=str, default='en', help='target extension')
 	parser.add_argument('-i','--inputdir', type=str, default=None, required=True, help='location of the input file')
 	parser.add_argument('-o','--outputdir', type=str, default=None, help='location of the output file')
-	parser.add_argument('-m','--mode', type=str, default='normal', help='normal mode calculate the tau and split it by the differentiator, compare mode run two files to compare the tau value')
+	parser.add_argument('-m','--mode', type=str, default='normal', choices=["normal", "split", "compare", "score"], help='normal(split) mode calculate the tau and split it by the differentiator, compare mode run two files to compare the tau value')
 	parser.add_argument('--compare_extension', type=str, default='tau', help='the extension for the tau output file in compare mode, default tau')
 	parser.add_argument('-d','--differentiator', type=getDifferentiator, default="passed.failed", help='names for aligments larger|smaller than tau, format larger.smaller')
 	parser.add_argument('-t','--tau', type=float, default=0.0, help='tau coefficient for comparison')
-	parser.add_argument('--printscore', type=str, default='off', help='print score alongside the alignment')
-	parser.add_argument('--print_alignment', action='store_true', help='print the detected alignment alongside tau score during compare mode, default false')
+	parser.add_argument('--debug_print_score', type=str, default="off", choices=["on", "off", "avg"], help='if enabled, print score alongside the alignment, only in normal mode')
+	parser.add_argument('--print_alignment', action='store_true', help='print the detected alignment alongside tau score during compare mode, default false, only in compare mode')
 	args = parser.parse_args()
 	if(args.outputdir is None):
 		args.outputdir = args.inputdir
 	global PRINT_SCORE
-	PRINT_SCORE	= args.printscore
-	
+	PRINT_SCORE	= args.debug_print_score
+
 	# Execute script
-	if(args.mode == 'normal'):
+	if(args.mode == 'normal' or args.mode == "split"):
 		sets = readTogether(args.inputdir, args.src, args.tgt)
 		checkAndWrite(args.outputdir, args.src, args.tgt, sets, args.tau, args.differentiator)
 	elif(args.mode == 'compare'):
 		sets = createScore(args.inputdir, args.src, args.tgt)
-		writeTauOnly(args.outputdir, sets, args.compare_extension, args.print_alignment)
+		writeTauOnly(args.outputdir, sets, args.compare_extension, writeFoundAlignment=args.print_alignment)
+	elif(args.mode == 'score'):
+		sets = readAndScoreAlignment(args.inputdir)
+		writeTauOnly(args.outputdir, sets, args.compare_extension, writeFoundAlignment=args.print_alignment)
 	else:
 		raise argparse.ArgumentTypeError("Incorect mode, must be normal|compare")

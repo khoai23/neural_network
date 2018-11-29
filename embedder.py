@@ -1,5 +1,7 @@
 import tensorflow as tf
 import sys, re, argparse, io, time, pickle
+# from itertools import cycle
+import types
 from ffBuilder import *
 from exampleBuilder import *
 import numpy as np
@@ -171,13 +173,12 @@ def getCBOWRelationFromParentNode(parentNode, listRelation, lookupDict, useGrand
 								   lookupDict.get(child.dependency, defaultWordIdx), lookupDict.get(tagChangeFunc(child.tag), defaultWordIdx)			], 
 							lookupDict.get(child.word, defaultWordIdx)))
 	
-def createFeedData(tree, lookupDict, cbow=(False, False)):
+def createFeedData(tree, lookupDict, cbowMode=False, cbowGrandparentMode=False):
 	# create a tuple (input,output), two matrix representing feeding data. Congregate as needed later
 	allRelation = []
-	cbowMode, cbowGrandparent = cbow
 	def relationFunc(node):
 		if(cbowMode):
-			getCBOWRelationFromParentNode(node, allRelation, lookupDict, cbowGrandparent)
+			getCBOWRelationFromParentNode(node, allRelation, lookupDict, cbowGrandparentMode)
 		else:
 			getRelationFromParentNode(node, allRelation, lookupDict)
 	
@@ -187,7 +188,7 @@ def createFeedData(tree, lookupDict, cbow=(False, False)):
 	deleteTree(tree)
 	return allRelation
 	
-def createFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wordWindow=WORD_WINDOW, unknownWordIdx=0):
+def createFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wordWindow=WORD_WINDOW, unknownWordIdx=0, filterFunc=None):
 	feed = []
 	if(not cbowMode):
 		# Normal, get skip-gram within wordWindow
@@ -201,6 +202,8 @@ def createFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wordWindow=
 		for i in range(wordWindow, len(sentence)-wordWindow):
 			context = [lookupDict.get(sentence[i+x], unknownWordIdx) for x in range(-wordWindow, wordWindow+1) if x != 0]
 			feed.append((context, lookupDict.get(sentence[i], unknownWordIdx)))
+	if(filterFunc):
+		feed = [f for f in feed if filterFunc(f)]
 	return feed
 
 def createFeedDataFromPairBlock(blockPair, lookupDict, certaintyMode=False, unknownWordIdx=0):
@@ -233,61 +236,55 @@ def createExtendedFeedDataFromSentence(sentence, lookupDict, cbowMode=False, wor
 				feed.append(([rightId, disLeft], leftId))
 	return feed
 
+def _processBatch(batch, cbowMode):
+	inputFeed, outputFeed = zip(*batch)
+	inputFeed = np.array(inputFeed)
+	outputFeed = np.array(outputFeed)
+	if(not cbowMode):
+		assert len(inputFeed.shape) == 1, "Wrong shape!! {}".format(inputFeed.shape)
+		np.expand_dims(inputFeed, -1)
+#	print("Batch created with shape {} - {}".format(inputFeed.shape, outputFeed.shape))
+	return (inputFeed, outputFeed)
+
+def batchGeneratorFromFeedData(feedGenerator, batchSize, cbowMode=False):
+	feed = []
+	try:
+		for block in feedGenerator:
+			feed.extend(block)
+			while(len(feed) >= batchSize):
+				batch = feed[:batchSize]
+				feed = feed[batchSize:]
+				yield _processBatch(batch, cbowMode)
+				del batch
+	except StopIteration:
+		if(len(feed) > 0):
+			yield _processBatch(feed, cbowMode)
+			del feed
+
 def getBatchFromFeedData(batchSize, feed, addRelationFunc, cbowMode=False):
 	# Only get a batch of specified size, add more relation 
-	while(len(feed) < batchSize):
-		newRelations = addRelationFunc()
-		if(newRelations is None):
-			break
-		else:
-			feed.extend(newRelations)
-			# in skip-gram, double up the relation
-			if(not cbowMode):
-				reverseRelation = [(w2, w1) for w1, w2 in newRelations]
-				feed.extend(reverseRelation)
-	if(len(feed) == 0):
-		# Out of data, quitting
-		return None
-	batch = feed[:batchSize]
-	inputFeed = []
-	outputFeed = []
-	# print(batch)
-	for i, o in batch:
-		# if cbowMode, input is already array, if skip-gram then it need to be converted into array
-		inputFeed.append(i if cbowMode else [i])
-		outputFeed.append([o])
-	del feed[:batchSize]
-	
-	# if last batch, add dummy data to feed into inputs
-	if(len(inputFeed) < batchSize):
-		inputSize = len(inputFeed[0])
-		for i in range(batchSize-len(inputFeed)):
-			if(cbowMode):
-				inputFeed.append([0] * inputSize)
-			else:
-				inputFeed.append([0])
-			outputFeed.append([0])
-	
-	return inputFeed, outputFeed
+	raise NotImplementedError("Overhauling the process")
 	
 def generateDictionaryFromParser(lines, regex, regexGroupIdx, useMatch=True):
-	dict = {}
+	wordDict = {}
 	for line in lines:
 		match = re.match(regex, line) if(useMatch) else re.search(regex, line)
 		if(match is not None):
 			if(useMatch):
 				word = match.group(regexGroupIdx)
-				dict[word] = dict.get(word, 0) + 1
+				wordDict[word] = wordDict.get(word, 0) + 1
 				# print(word)
 			else:
 				for arr in match:
 					word = arr[regexGroupIdx]
-					dict[word] = dict.get(word, 0) + 1
+					wordDict[word] = wordDict.get(word, 0) + 1
 	
-	return dict
+	return wordDict
 	
-def generateDictionaryFromLines(lines, lowercase=False, decapitalize=False):
-	dict = {}
+def generateDictionaryFromLines(lines, ignoreDict=None, lowercase=False, decapitalize=False):
+	# from a text file, generate the word dict with occurence as value
+	# if ignoreDict, only count those not within the ignoreDict
+	wordDict = {}
 	for line in lines:
 		if(lowercase):
 			line = line.lower()
@@ -295,11 +292,29 @@ def generateDictionaryFromLines(lines, lowercase=False, decapitalize=False):
 		for word in words:
 			if(decapitalize and checkCapitalize(word)):
 				word = word.lower()
-				dict[capitalize_token] = dict.get(capitalize_token, 0) + 1
-			dict[word] = dict.get(word, 0) + 1
-	return dict
-	
-def organizeDict(wordCountDict, tagDict, dictSize, extraWords=["*UNKNOWN*"], addTags=False):
+				wordDict[capitalize_token] = wordDict.get(capitalize_token, 0) + 1
+			if(ignoreDict and word in ignoreDict):
+				# if is here, the word is lowercased
+				continue
+			wordDict[word] = wordDict.get(word, 0) + 1
+	return wordDict
+
+def generateDictionaryFromExportedFile(lines):
+	# from exported text file, generate the made word dict
+	if(len(lines[0].strip().split()) == 2):
+		# discard the first line
+		lines = lines[1:]
+	wordDict = {}
+	wordVectors = []
+	for line in lines:
+		assert len(wordDict) == len(wordVectors)
+		word, textVector = line.strip().split("\t ", 1)
+		wordDict[word] = len(wordDict)
+		wordVectors.append(np.fromstring(textVector))
+	wordVectors = np.asarray(wordVectors)
+	return wordDict, wordVectors
+
+def organizeDict(wordCountDict, dictSize, extraWords=["*UNKNOWN*"], tagDict=None, existedIndex=0):
 	# Dict will be sorted from highest to lowest appearance
 	if(dictSize < 0):
 		# Obscure mode, remove all items that show up less than |threshold|
@@ -307,20 +322,21 @@ def organizeDict(wordCountDict, tagDict, dictSize, extraWords=["*UNKNOWN*"], add
 		wordCountDict = {k: v for k, v in wordCountDict.items() if v > threshold}
 		print("Found {:d} words that fit the criteria: appeared more than {:d} times".format(len(wordCountDict), threshold))
 	listWords = [w for w,c in sorted(wordCountDict.items(), key=lambda item: item[1], reverse=True)]
-	listWords = listWords[:dictSize-1] if(dictSize > 0) else listWords
+	listWords = listWords[:dictSize - len(extraWords)] if(dictSize > 0) else listWords
 	# this is important, because we are keeping the unknown words at index 0
+	# not as important as it was since we now have the reference to it
 	listWords = extraWords + listWords
-	if(addTags):
+	if(tagDict):
 		for key in tagDict:
 			listWords.append(tagChangeFunc(key))
 	# create two dictionary for reference
 	wordDict = {}
-	refDict = {}
+	# the existedIndex is for when there is a dict already occupying that range
 	for i, word in enumerate(listWords):
-		wordDict[word] = i
-		refDict[i] = word
+		wordDict[word] = i + existedIndex
 	
-	return len(listWords), wordDict, refDict
+	del listWords
+	return len(wordDict), wordDict
 
 def createEmbedding(parseMode, embMode, fileIn, sizeTuple, extraWords=[], tagDict=None, properCBOW=True, lowercase=False, decapitalize=False):
 	dictSize, windowSize, embeddingSize, batchSize = sizeTuple
@@ -333,15 +349,31 @@ def createEmbedding(parseMode, embMode, fileIn, sizeTuple, extraWords=[], tagDic
 	fileIn.seek(0)
 	# Generate frequency dictionary, depending on the input file is a normal one (normal/extended) vs conll one (dependency)
 	if(parseMode == 'normal' or parseMode == 'extended'):
-		allWordDict = generateDictionaryFromLines(fileIn.readlines(), lowercase=lowercase, decapitalize=decapitalize)
-		dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords=extraWords, addTags=False)
+		allWordDict = generateDictionaryFromLines(fileIn, lowercase=lowercase, decapitalize=decapitalize)
+		dictSize, wordDict = organizeDict(allWordDict, dictSize, extraWords=extraWords)
+		del allWordDict
+	elif(parseMode == 'dependency'):
+		allWordDict = generateDictionaryFromParser(fileIn, conllRegex, 2)
+		dictSize, wordDict = organizeDict(allWordDict, dictSize, extraWords=extraWords, tagDict=tagDict)
+		del allWordDict
+	elif(parseMode == 'enlarge'):
+		assert len(fileIn) == 2, "The input for createEmbedding mode enlarge must be a tuple of (original, improvement)"
+		originalFile, enlargeFile = fileIn
+		originalWordDict, originalWordVectors = generateDictionaryFromExportedFile(originalFile)
+		newWordDict = generateDictionaryFromLines(enlargeFile, ignoreDict=originalWordDict)
+		dictSize, newWordDict = organizeDict(newWordDict, dictSize, extraWords=[], existedIndex=len(originalWordDict))
+		# merge the old and new word
+		wordDict = {**originalWordDict, **newWordDict}
+		# hack - keep the original value at None to transfer to enlargement 
+		wordDict[None] = len(originalWordDict)
 	else:
-		allWordDict = generateDictionaryFromParser(fileIn.readlines(), conllRegex, 2)
-		dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords=extraWords, addTags=True)
-	print("All words found: {}".format(len(allWordDict)))
+		raise ValueError("parseMode argument not supported - {}".format(parseMode))
+	refDict = {v:k for k,v in wordDict.items() if k is not None}
+	print("All words found: {:d}, effective dictionary size: {:d}".format(len(allWordDict), dictSize))
 	
 	# Create a session based on the actual dictSize (plus unknownWord and tags and maybe start/stop sentence token)
 	# Session will only accept this batch size from then on
+	# No longer the case, batch is dynamic
 	if(parseMode == 'extended'):
 		embeddingInputSize = 2
 	elif(embMode == 'cbow'):
@@ -351,10 +383,12 @@ def createEmbedding(parseMode, embMode, fileIn, sizeTuple, extraWords=[], tagDic
 		embeddingInputSize = 1
 	# extended must use cbow scheme to support its closeleft-left-closeright-right tokens despite being skipgram
 	# in contrast, contextual can only use skipgram since there is no way to reflect n-n group relation
-	if((parseMode == 'extended' or (embMode == 'cbow' and parseMode != 'contextual')) and properCBOW):
-		sessionTuple = createEmbeddingSessionCBOW(dictSize, embeddingSize, embeddingInputSize, batchSize)
+	if(parseMode == 'enlarge'):
+		sessionTuple = createEnlargeEmbeddingSession(originalWordVectors, dictSize, embeddingSize, isCBOW=(parseMode == 'cbow'))
+	elif((parseMode == 'extended' or (embMode == 'cbow' and parseMode != 'contextual')) and properCBOW):
+		sessionTuple = createEmbeddingSessionCBOW(dictSize, embeddingSize, embeddingInputSize)
 	else:
-		sessionTuple = createEmbeddingSession(dictSize, embeddingSize, embeddingInputSize, batchSize)
+		sessionTuple = createEmbeddingSession(dictSize, embeddingSize, embeddingInputSize)
 	
 	dictTuple = dictSize, wordDict, refDict, tagDict
 	
@@ -364,44 +398,7 @@ def createEmbedding(parseMode, embMode, fileIn, sizeTuple, extraWords=[], tagDic
 	
 	return sessionTuple, dictTuple
 
-def createEmbeddingObsolete(inputFileAndMode, tagDict, dictSize, embeddingSize, batchSize, extraWords):
-	inputFile, isNormal, isCBOW, windowSize, properCBOW, lowercase = inputFileAndMode
-	# Destroy any current graph and session
-	tf.reset_default_graph()
-	session = tf.get_default_session()
-	if(session is not None):
-		session.close()
-	
-	inputFile.seek(0)
-	# Generate frequency dictionary
-	if(isNormal):
-		allWordDict = generateDictionaryFromLines(inputFile.readlines(), lowercase)
-	else:
-		allWordDict = generateDictionaryFromParser(inputFile.readlines(), conllRegex, 2)
-	print("All words found: {}".format(len(allWordDict)))
-	dictSize, wordDict, refDict = organizeDict(allWordDict, tagDict, dictSize, extraWords=extraWords, addTags=(not isNormal))
-	
-	# Create a session based on the actual dictSize (plus unknownWord and tags and maybe start/stop sentence token)
-	# Session will only accept this batch size from then on
-	if(isCBOW):
-		# input the size of window
-		embeddingInputSize = wordWindow * 2
-	else:
-		embeddingInputSize = 1
-	if(isNormal and isCBOW and properCBOW):
-		sessionTuple = createEmbeddingSessionCBOW(dictSize, embeddingSize, embeddingInputSize, batchSize)
-	else:
-		sessionTuple = createEmbeddingSession(dictSize, embeddingSize, embeddingInputSize, batchSize)
-	
-	dictTuple = dictSize, wordDict, refDict, tagDict
-	
-	session = sessionTuple[0]
-	session.run(tf.global_variables_initializer())
-	# print(np.array2string(sessionTuple[4][0].eval(session=session)))
-	
-	return sessionTuple, dictTuple
-
-def generateTrainingData(parseMode, embMode, fileIn, wordDict, batchSize, cbowGrandparent=False, lowercase=False, decapitalize=False, contextualWindow=0, contextualThreshold=0.1):
+def generateTrainingData(parseMode, embMode, fileIn, wordDict, batchSize, cbowGrandparent=False, lowercase=False, decapitalize=False, contextualWindow=0, contextualThreshold=0.1, generatorMode=False):
 	fileIn.seek(0)
 	cbowMode = (embMode == 'cbow')
 	if(parseMode == 'dependency'):
@@ -410,30 +407,35 @@ def generateTrainingData(parseMode, embMode, fileIn, wordDict, batchSize, cbowGr
 		
 	# generator function from this block to avoid memory overflow
 		def getFeed():
-			if(len(dataBlock) <= 0):
-				return None
-			block = dataBlock.pop()
-			tree = constructTreeFromBlock(block, conllRegex)
-			del block
-			return createFeedData(tree, wordDict, (cbowMode, cbowGrandparent))
+			while len(dataBlock > 0):
+				block = dataBlock.pop()
+				tree = constructTreeFromBlock(block, conllRegex)
+				del block
+				yield createFeedData(tree, wordDict, cbowMode=cbowMode, cbowGrandparentMode=cbowGrandparent)
 	elif(parseMode == 'normal' or parseMode == 'extended'):
 		sentenceToDataFunc = createFeedDataFromSentence if parseMode == 'normal' else createExtendedFeedDataFromSentence
-		sentences = parseSentencesFromLines(fileIn.readlines(), (start_token, end_token, wordWindow) if cbowMode else False, lowercase, decapitalize=decapitalize)
-		def getFeed():
-			try:
-				sentence = next(sentences)
-			except StopIteration:
-				return None
-			return sentenceToDataFunc(sentence, wordDict, cbowMode, wordWindow)
+		def createFeed():
+			fileIn.seek(0)
+			sentences = parseSentencesFromLines(fileIn.readlines(), (start_token, end_token, wordWindow) if cbowMode else False, lowercase, decapitalize=decapitalize)
+			return (sentenceToDataFunc(sentence, wordDict, cbowMode, wordWindow) for sentence in sentences)
 #			return createFeedDataFromSentence(sentence, wordDict, cbowMode, wordWindow)
 	elif(parseMode == 'contextual'):
 		graderFunc = lambda i1, i2: defaultGraderFunction(i1, i2, threshold=contextualThreshold, debugPrinter=print)
-		matchingBlocks = iter( contextualParseSentencesFromLines(fileIn.readlines(), graderFunc, lowercase=lowercase, decapitalize=decapitalize, window=contextualWindow) )
-		def getFeed():
-			try:
-				return createFeedDataFromPairBlock(next(matchingBlocks), wordDict)
-			except StopIteration:
-				return None
+		def createFeed():
+			matchingBlocks = iter( contextualParseSentencesFromLines(fileIn.readlines(), graderFunc, lowercase=lowercase, decapitalize=decapitalize, window=contextualWindow) )
+			return ( createFeedDataFromPairBlock(block, wordDict) for block in matchingBlocks)
+	elif(parseMode == 'enlarge'):
+		# filter out those with inputs from entirely original file
+		# get the original values from the hack, and check the feed with it
+		originalWordSize = wordDict.pop(None)
+		checkCaseIsEnlargeCBOW = lambda item: any( (idx >= originalWordSize for idx in item[0]) )
+		checkCaseIsEnlargeSkipgram = lambda item: item[0] >= originalWordSize
+		# depend on cbow/skipgram
+		checkCaseIsEnlarge = checkCaseIsEnlargeCBOW if cbowMode else checkCaseIsEnlargeSkipgram
+		def createFeed():
+			fileIn.seek(0)
+			sentences = parseSentencesFromLines(fileIn.readlines(), (start_token, end_token, wordWindow) if cbowMode else False, lowercase, decapitalize=decapitalize)
+			return (createFeedDataFromSentence(sentence, wordDict, cbowMode, wordWindow, filterFunc=checkCaseIsEnlarge) for sentence in sentences)
 	else:
 		# if we got here, somebody (me) put a new mode in the modeStringParse without actually implementing it. Dumbass.
 		raise Exception("Invalid parseMode: {:s}".format(parseMode))
@@ -442,129 +444,48 @@ def generateTrainingData(parseMode, embMode, fileIn, wordDict, batchSize, cbowGr
 	# likewise, if contextual, make sure the data is not parsed in cbowMode either
 	cbowMode = (cbowMode or parseMode == 'extended') and parseMode != 'contextual'
 	# initialize
-	feed = getFeed()
-	batch = getBatchFromFeedData(batchSize, feed, getFeed, cbowMode)
-	# loop until no more feed/batch can be generated
-	workingBatches = []
-	while(batch is not None):
-		workingBatches.append(batch)
+	if(not generatorMode):
+		feed = getFeed(reset=True)
 		batch = getBatchFromFeedData(batchSize, feed, getFeed, cbowMode)
-	
-	return workingBatches
+		# loop until no more feed/batch can be generated
+		workingBatches = []
+		while(batch is not None):
+			workingBatches.append(batch)
+			batch = getBatchFromFeedData(batchSize, feed, getFeed, cbowMode)
+		
+		return workingBatches
+	else:
+		def createBatchGeneratorFunc():
+			feedGenerator = createFeed()
+			return batchGeneratorFromFeedData(feedGenerator, batchSize, cbowMode=cbowMode)
+		return createBatchGeneratorFunc
 
 def trainEmbedding(createdData, sessionTuple, epoch, timerFunc=None, timerInterval=1000, passedSteps=0):
 	session, train_op, training_inputs, training_outputs, resultTuple = sessionTuple
+	if(callable(createdData)):
+		print("Generator function received @trainEmbedding")
+		createdDataFn = createdData
+	else:
+		createdDataFn = None
 	for i in range(1, epoch+1):
-		total_loss = 0.0
+		if(createdDataFn):
+			createdData = createdDataFn()
+			print("Re-initiate data for a new cycle: {}".format(createdData))
+#			assert isinstance(createdData, types.GeneratorType)
+		total_loss = per_timer_loss = 0.0
+		counter = 0
 		for inputBatch, outputBatch in createdData:
 			_, loss = session.run(fetches=train_op, feed_dict={training_inputs:inputBatch, training_outputs:outputBatch})
 			passedSteps += 1
-			total_loss += loss
+			counter += 1
+			per_timer_loss += loss
 			if(passedSteps % timerInterval == 0 and timerFunc is not None):
-				print("Steps {:d}; time passed {:.2f}s, last loss {:.4f}.".format(passedSteps, timerFunc(None), loss))
+				total_loss += per_timer_loss
+				print("Steps {:d}; time passed {:.2f}s, average loss {:.4f}.".format(passedSteps, timerFunc(None), per_timer_loss / float(timerInterval)))
+				per_timer_loss = 0
 		currentTime = timerFunc(i)
-		print("Epoch {:d} completed, time passed {:.2f}s, total loss in total / per batch: {:.5f} / {:.5f}".format(i, currentTime, total_loss, total_loss / float(len(createdData))))
+		print("Epoch {:d} completed, time passed {:.2f}s, total loss in total / per batch: {:.5f} / {:.5f}".format(i, currentTime, total_loss, total_loss / float(counter) * timerInterval))
 	return passedSteps
-
-def trainEmbeddingObsolete(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData=None, timerFunc=None):
-	# If in first iteration, disregard the epoch counter
-	embeddingMode = fileAndMode[0]
-	session, train_op, training_inputs, training_outputs, resultTuple = sessionTuple
-	dictSize, wordDict, refDict, tagDict = dictTuple
-	if(embeddingMode == 'dependency'):
-		embeddingMode, file, cbowMode, cbowGrandparent = fileAndMode
-		if(savedTrainData == None or savedTrainData == True):
-			# Do not save data / first time generate data
-			# Conll format, generate dependency tree block and create batch data
-			savedBatches = []
-			#return to head of the file, this time split in blocks and create appropriate tree
-			file.seek(0)
-			
-			dataBlock = getDataBlock(file.readlines(), blankLineRegex)
-			dataBlock.pop(0)
-			
-			# generator function for the getBatch process
-			def getFeedFromBlock():
-				if(len(dataBlock) <= 0):
-					return None
-				block = dataBlock.pop()
-				tree = constructTreeFromBlock(block, conllRegex)
-				del block
-				return createFeedData(tree, wordDict, (cbowMode, cbowGrandparent))
-			
-			# initialize
-			feed = getFeedFromBlock()
-			batch = getBatchFromFeedData(batchSize, feed, getFeedFromBlock, cbowMode)
-			# loop until no more feed/batch can be generated
-			while(batch is not None):
-				if(savedTrainData):
-					savedBatches.append(batch)
-				# Handle data made by batch
-				inputFeed, outputFeed = batch
-				session.run(fetches=train_op, feed_dict={training_inputs: inputFeed, training_outputs: outputFeed})
-				# Load new batch
-				batch = getBatchFromFeedData(batchSize, feed, getFeedFromBlock, cbowMode)
-				
-			# Saved data will be returned
-			return savedBatches
-		elif(isinstance(savedTrainData, list)):
-			# use saved data to train
-			loss = 0.0
-			for i in range(1, epoch+1):
-				if(i % 100 == 0 and timerFunc is not None):
-					print("Iteration %d, time passed %.2fs, total loss per iter %.2f" % (i, timerFunc(i), loss / 100))
-					# reset loss count
-					loss = 0.0
-				for batch in savedTrainData:
-					_, newloss = session.run(fetches=train_op, feed_dict={training_inputs: batch[0], training_outputs: batch[1]})
-					loss += newloss
-		else:
-			raise Exception("Wrong input of savedTrainData (neither list nor boolean)")
-	elif(embeddingMode == 'normal'):
-		cbowMode = fileAndMode[2]
-		if(cbowMode):
-			embeddingMode, file, cbowMode, startToken, endToken, wordWindow, lowercase = fileAndMode
-		else:
-			embeddingMode, file, cbowMode, wordWindow, lowercase = fileAndMode
-		if(savedTrainData == None or savedTrainData == True):
-			savedBatches = []
-			file.seek(0)
-			sentences = parseSentencesFromLines(file.readlines(), (start_token, end_token, wordWindow) if cbowMode else False, lowercase=lowercase, decapitalize=decapitalize)
-			
-			# generator function for getBatch
-			def getFeedFromSentence():
-				try:
-					sentence = next(sentences)
-				except StopIteration:
-					return None
-				return createFeedDataFromSentence(sentence, wordDict, cbowMode, wordWindow)
-			
-			feed = getFeedFromSentence()
-			batch = getBatchFromFeedData(batchSize, feed, getFeedFromSentence, cbowMode)
-			while(batch is not None):
-				if(savedTrainData):
-					savedBatches.append(batch)
-				# Handle data made by batch
-				inputFeed, outputFeed = batch
-				session.run(fetches=train_op, feed_dict={training_inputs: inputFeed, training_outputs: outputFeed})
-				# Load new batch
-				batch = getBatchFromFeedData(batchSize, feed, getFeedFromSentence, cbowMode)
-				
-			# Saved data will be returned
-			return savedBatches
-		elif(isinstance(savedTrainData, list)):
-			# use saved data to train
-			loss = 0.0
-			for i in range(1, epoch+1):
-				if(i % 100 == 0 and timerFunc is not None):
-					print("Iteration %d, time passed %.2fs, total loss per iter %.2f" % (i, timerFunc(i), loss / 100))
-					# reset loss count
-					loss = 0.0
-				for batch in savedTrainData:
-					_, newloss = session.run(fetches=train_op, feed_dict={training_inputs: batch[0], training_outputs: batch[1]})
-					loss += newloss
-		else:
-			raise Exception("Wrong input of savedTrainData (neither list nor boolean)")
 
 def evaluateSimilarity(divResult):
 	return 1 - np.tanh(np.abs(np.log(divResult)))
@@ -709,10 +630,10 @@ def writeListWordsToFile(fileOrFileDir, wordDict):
 def modeStringParse(string):
 	# mode is basically (isNormal, isCBOW, windowsize) tuple here
 	string = string.lower().split('_')
-	if(any(string[0] == item for item in ['normal', 'dependency', 'extended', 'contextual'])):
+	if(any(string[0] == item for item in ['normal', 'dependency', 'extended', 'contextual', 'enlarge'])):
 		isNormal = (string[0] == 'normal')
 	else:
-		raise argparse.ArgumentTypeError('Arg1 must be dependency/normal/extended/contextual')
+		raise argparse.ArgumentTypeError('Arg1 must be dependency/normal/extended/contextual/enlarge')
 	
 	if(any(string[1] == item for item in ['skipgram', 'cbow'])):
 		isCBOW = (string[1] == 'cbow')
@@ -807,6 +728,8 @@ if __name__ == "__main__":
 	parser.add_argument('--terminal_commands_only', action='store_true', help='run a terminal only, doing nothing about the script itself')
 	parser.add_argument('--context_window', type=int, default=2, help='the maximum difference to run compare sentences. Only used in contextual mode. Default 2.')
 	parser.add_argument('--context_threshold', type=float, default=0.1, help='the threshold to consider extracting group. Only used in contextual mode. Default 0.1')
+	parser.add_argument('--generator_mode', action='store_true', help='if specified, will set the data to generator mode, which will prevent overflowing.')
+	parser.add_argument('--enlarge_source_file', type=str, default=None, help='the original embedding file needing enlargement. Required in enlarge parse mode ')
 	parser.add_argument('--other_mode', action='store_true', help='placeholder')
 	args = parser.parse_args()
 	
@@ -836,7 +759,6 @@ if __name__ == "__main__":
 	timer = time.time()
 	
 	inputFile = io.open(args.inputdir + '.' + args.input_extension, 'r', encoding='utf-8')
-	tagDict = getTagFromFile(args.tagdir, True)
 	# Exit prematurely with vocab export
 	if(args.export_mode == 'vocab'):
 		allWordDict = generateDictionaryFromLines(inputFile.readlines(), lowercase=args.lowercase, decapitalize=args.decapitalize)
@@ -845,20 +767,30 @@ if __name__ == "__main__":
 		sys.exit(0)
 	# Initialize the embedding
 	# Todo add the inverse mode
+	inputs = inputFile.readlines()
 	if(parseMode == 'normal'):
 		# add the sos and eos token as well
 		extraWords = [unknownWord, start_token, end_token]
 	elif(parseMode == 'extended'):
 		# add far left - close left - close right - far right
 		extraWords = [unknownWord, far_left_token, close_left_token, close_right_token, far_right_token, start_token, end_token]
-	else: #elif(parseMode == 'dependency'):
+	elif(parseMode == 'enlarge'):
+		# do nothing to extra word, but open the file to inputs and read them as well
+		sourceFile = io.open(args.enlarge_source_file, "w", encoding="utf-8")
+		inputs = (sourceFile.readlines(), inputs)
+		sourceFile.close()
+	elif(parseMode == 'dependency'):
+		tagDict = getTagFromFile(args.tagdir, True)
 		# add only the unknownWord
 		extraWords = [unknownWord]
-	sessionTuple, dictTuple = createEmbedding(parseMode, embMode, inputFile, (dictSize, wordWindow, embeddingSize, batchSize), tagDict=tagDict, properCBOW=args.average, extraWords=extraWords, lowercase=args.lowercase, decapitalize=args.decapitalize)
+	else:
+		raise argparse.ArgumentError("mode", "parseMode not implemented {}".format(parseMode))
+	sessionTuple, dictTuple = createEmbedding(parseMode, embMode, inputs, (dictSize, wordWindow, embeddingSize, batchSize), tagDict=tagDict, properCBOW=args.average, extraWords=extraWords, lowercase=args.lowercase, decapitalize=args.decapitalize)
 #	sessionTuple, dictTuple = createEmbedding((file, isNormal, isCBOW, wordWindow, args.average, args.lowercase), tagDict, dictSize, embeddingSize, batchSize, unknownWord if(not isNormal) else [unknownWord, '<s>', '<\s>'])
 	print("Done for @createEmbedding, time passed %.2fs" % (time.time() - timer))
 	
 	# create the static sample for evaluation
+	# make sure it belong to the new dict
 	static_sample = np.random.choice(sampleWordWindow, sampleSize, replace=False)
 	# Train and evaluate the embedding
 	def timerFunc(counter=None):
@@ -868,17 +800,17 @@ if __name__ == "__main__":
 		return time.time() - timer
 		
 	wordDict = dictTuple[1]
-	generatedTrainData = generateTrainingData(parseMode, embMode, inputFile, wordDict, batchSize, cbowGrandparent=args.grandparent, lowercase=args.lowercase, contextualWindow=args.context_window, contextualThreshold=args.context_threshold)
-	print("Done generating training data, time passed {:.2f}s, generated batch of size {:d}".format(time.time() - timer, len(generatedTrainData)))
+	generatedTrainData = generateTrainingData(parseMode, embMode, inputFile, wordDict, batchSize, cbowGrandparent=args.grandparent, lowercase=args.lowercase, contextualWindow=args.context_window, contextualThreshold=args.context_threshold, generatorMode=args.generator_mode)
+	print("Done generating training data, time passed {:.2f}s, generated batch of size {:d}".format(time.time() - timer, batchSize))
+	if(args.generator_mode):
+		print("Is a generator: ", generatedTrainData)
+		assert callable(generatedTrainData)
 	
 	totalSteps = trainEmbedding(generatedTrainData, sessionTuple, epoch, timerFunc=timerFunc, timerInterval=args.timer)
 	print("All training complete @trainEmbedding, total steps {:d}, time passed {:.2f}s".format(totalSteps, time.time() - timer))
-#	savedTrainData = trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, 1, True)
-#	print("Done generating @trainEmbedding (first iteration), data included %d batches(size %d), time passed %.2fs" % (len(savedTrainData), batchSize, time.time() - timer))
-#	trainEmbedding(fileAndMode, sessionTuple, dictTuple, batchSize, epoch, savedTrainData, timerFunc)
-#	print("Done full training by @trainEmbedding (%d iteration), time passed %.2fs" % (epoch, time.time() - timer))
+	inputFile.close()
 	
-	# Final evaluation. Must run, to bring out the resultTuple
+	# Final evaluation. Must run to bring out the resultTuple
 	resultTuple = evaluateEmbedding(sessionTuple, dictTuple, sampleSize, sampleWordWindow, checkSize)
 	print("Final @evaluateEmbedding on random sample, time passed %.2fs" % (time.time() - timer))
 	
@@ -887,8 +819,6 @@ if __name__ == "__main__":
 	
 	# Export to file
 	exportEmbedding(args.export_mode, args.outputdir, args.output_extension, dictTuple[1], resultTuple, embeddingCountAndSize)
-	
-	inputFile.close()
 
 	if(args.terminal_commands):
 		# Allow reading words from the terminal and output closest words found

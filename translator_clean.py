@@ -37,7 +37,10 @@ def batchAndPad(dataset, batch_size, src_padding_idx=None, tgt_padding_idx=None)
 	# TODO a bucket mode
 	assert isinstance(src_padding_idx, int) and isinstance(tgt_padding_idx, int), "In batchAndPad, padding must be int"
 	# sort the dataset BY tgt length THEN src length
-	dataset = sorted(dataset, key=lambda x: (x[3], x[2]))
+	indexed_dataset = enumerate(dataset)
+	sorted_with_idx = sorted(indexed_dataset, key= lambda x: (x[1][3], x[1][2]))
+	# dataset = sorted(dataset, key=lambda x: (x[3], x[2]))
+	indices, dataset = zip(*sorted_with_idx)
 	# batch it up
 	batched = []
 	current_batch = []
@@ -50,11 +53,15 @@ def batchAndPad(dataset, batch_size, src_padding_idx=None, tgt_padding_idx=None)
 	if(len(current_batch) > 0):
 		# collect last item if available
 		batched.append(addPadding(current_batch, src_padding_idx, tgt_padding_idx))
-	return batched
+	return batched, indices
 
-def processTrainData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file, filter_fn=None):
+def processData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file=None, filter_fn=None):
 	src_data = readFile(src_file)
-	tgt_data = readFile(tgt_file)
+	if(tgt_file is None):
+		print("No tgt_file specified, using dummy.")
+		tgt_data = ["" for _ in src_data]
+	else:
+		tgt_data = readFile(tgt_file)
 	# filter the zipped data
 	if(filter_fn is not None and callable(filter_fn)):
 		zipped_data = zip(src_data, tgt_data)
@@ -73,8 +80,8 @@ def processTrainData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file, f
 	dataset = zip(src_data, tgt_data)
 	dataset_with_length = ((src_line, tgt_line, len(src_line), len(tgt_line)) for src_line, tgt_line in dataset)
 
-	padded_data = batchAndPad(dataset_with_length, args.batch_size, src_padding_idx=src_unknown_idx, tgt_padding_idx=tgt_unknown_idx)
-	return padded_data
+	padded_data, indices = batchAndPad(dataset_with_length, args.batch_size, src_padding_idx=src_unknown_idx, tgt_padding_idx=tgt_unknown_idx)
+	return padded_data, indices
 
 def createSession(args):
 	run_dir = args.run_dir
@@ -96,20 +103,17 @@ def createSession(args):
 	# create the placeholder, embed it and create at the encoder
 	src_inputs_placeholder =  tf.placeholder(dtype=tf.int32, shape=[None, None], name="src_plac")
 	src_inputs_length_placeholder = tf.placeholder(dtype=tf.int32, shape=[None], name="src_len_plac")
+	batch_size = tf.shape(src_inputs_placeholder)[0]
 	embedded_inputs = src_embedding_fn(src_inputs_placeholder)
 	# the default dropout
 	dropout_placeholder = tf.placeholder_with_default(1.0, shape=(), name="dropout")
 	# encoder
 	encoder_outputs, encoder_state = builder.createEncoderClean(embedded_inputs, created_dropout=dropout_placeholder)
-	# create a projection layer or get existing 
-	with tf.variable_scope("projection", reuse=tf.AUTO_REUSE):
-		projection_layer = tf.layers.Dense(len(tgt_vocab), use_bias=False, name="decoder_projection_layer")
 	# decoder, depending on the mode
 	if(mode == "train"):
 		tgt_inputs_placeholder = tf.placeholder(dtype=tf.int32, shape=[None, None], name="tgt_plac")
 		tgt_inputs_length_placeholder = tf.placeholder(dtype=tf.int32, shape=[None], name="tgt_len_plac")
 		# pad the start token to the tgt_inputs, and remove one to preserve shape similarity
-		batch_size = tf.shape(tgt_inputs_placeholder)[0]
 		start_token_idx = tgt_word_to_id[start_token]
 		training_tgt_front_pad = tf.fill([batch_size, 1],  start_token_idx)
 		decoder_inputs_ids = tf.concat([training_tgt_front_pad, tgt_inputs_placeholder], axis=1)[:, :-1]
@@ -174,40 +178,54 @@ def trainSession(session_data, current_batch, dropout=None):
 	loss, token_loss, _ = session.run(all_train_ops, feed_dict=feed_dict)
 	return loss, token_loss
 
+def inferSession(session_data, current_batch):
+	session = session_data["session"]
+	predict_placeholders = session_data["predict_inputs"]
+	bundled = zip(predict_placeholders, current_batch)
+	feed_dict = {k:v for k, v in bundled if k is not None}
+	all_pred_ops = session_data["predictions"], session_data["length"], session_data["log_probs"]
+	predictions, predictions_length, _ = session.run(all_pred_ops, feed_dict=feed_dict)
+	return predictions, predictions_length
+
+def getGlobalStep(session):
+	session_global_step = tf.train.get_global_step()
+	return session.run(session_global_step)
+
 if __name__ == "__main__":
 	# Fix later
 	parser = argparse.ArgumentParser(description='Run RNN.')
 	args = parser.parse_args([])
-	args.mode = "train"
+	args.mode = "infer"
 	args.run_dir = sys.argv[1] #/home/quan/Workspace/Data/iwslt15
 	args.file_name = "train"
 	args.src = "en"
 	args.tgt = "vi"
 	args.num_units = 512
 	args.batch_size = 128
-	args.beam_size = 5
+	args.beam_size = 1
 	args.gpu_disable_allow_growth = False
 	args.save_path = "./run_trash.sav"
 	args.manual_load_train_data = True
 	args.epoch = 10
 	args.dropout = 0.8
 
-	filter_fn = lambda x: len(x[0].strip().split()) <= 50 and len(x[1].strip().split()) <= 50
 	
 	timer = time.time()
 	session_data = createSession(args)
 	print("Session created in {:.2f}s".format(time.time() - timer))
+	src_word_to_id = session_data["src_word_to_id"]
+	tgt_word_to_id = session_data["tgt_word_to_id"]
 	
 	if(args.mode == "train"):
-		src_word_to_id = session_data["src_word_to_id"]
-		tgt_word_to_id = session_data["tgt_word_to_id"]
+		filter_fn = lambda x: 0 < len(x[0].strip().split()) <= 50 and 0 < len(x[1].strip().split()) <= 50
 		dump_file = os.path.join(args.run_dir, "train.batch")
 		if(not os.path.isfile(dump_file) or args.manual_load_train_data):
 			print("Create data in training...")
 			with io.open(dump_file, "wb") as dump_file:
 				src_file = os.path.join(args.run_dir, "train." + args.src)
 				tgt_file = os.path.join(args.run_dir, "train." + args.tgt)
-				batched_dataset = processTrainData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file, filter_fn=filter_fn)
+				# training data won't need sentences indices
+				batched_dataset, _ = processData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file=tgt_file, filter_fn=filter_fn)
 				pickle.dump(batched_dataset, dump_file)
 		else:
 			with io.open(dump_file, "rb") as dump_file:
@@ -224,9 +242,38 @@ if __name__ == "__main__":
 			for batch_idx, batch in indexed_batches:
 				loss, token_loss = trainSession(session_data, batch, dropout=args.dropout)
 				print("Loss {:.2f}({:.2f}) for batch {:d}".format(loss, token_loss, batch_idx))
-			builder.saveToPath(session_data["session"], args.save_path)
+			builder.saveToPath(session_data["session"], args.save_path, getGlobalStep(session_data["session"]))
 			print("End epoch {:d}, time passed {:.2f}s".format(ep, time.time() - epoch_timer))
 		print("End training, time passed {:.2f}s".format(time.time() - timer))
+	elif(args.mode == "infer"):
+		# read data and batch them together
+		print("Create data for inference...")
+		src_file = os.path.join(args.run_dir, "infer." + args.src)
+		batched_dataset, indices = processData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file=None)
+		all_predictions, all_predictions_length = [], []
+		# run infer on batched data
+		timer = time.time()
+		print("Start inference process")
+		for batch in batched_dataset:
+			batch_predictions, batch_predictions_length = inferSession(session_data, batch)
+			all_predictions.extend(batch_predictions)
+			all_predictions_length.extend(batch_predictions_length)
+		print("Inference finished, time passed {:.2f}s".format(time.time() - timer))
+		# reorder and trim sentences
+		timer = time.time()
+		tgt_id_to_word = {v:k for k, v in tgt_word_to_id.items() }
+		word_lookup_fn = lambda idx: tgt_id_to_word.get(idx, unk_token)
+		zip_length_predictions = zip(all_predictions, all_predictions_length)
+		# trim
+		all_predictions = ( pred[:pred_length] for pred, pred_length in zip_length_predictions )
+		# reverse lookup and join
+		all_predictions = ( " ".join([word_lookup_fn(word_idx) for word_idx in pred]) for pred in all_predictions )
+		# sort to correct order
+		sorted_all_predictions = sorted(zip(indices, all_predictions))
+		_, all_predictions = zip(*sorted_all_predictions)
+		with io.open("infer_output.out", "w", encoding="utf8") as infer_file:
+			infer_file.write("\n".join(all_predictions))
+		print("Reverse lookup and ordered, time passed {:.2f}s".format(time.time() - timer))
 	else:
 		raise NotImplementedError("Not coded!")
 
