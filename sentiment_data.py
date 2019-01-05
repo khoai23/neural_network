@@ -1,15 +1,35 @@
 # cleaner functions
-from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner
+from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner, split_emoticon
 from scripts.tokenize_word import clean
 from xer import levenshtein
 from random import shuffle
 import os, io, json
 import numpy as np
+from sentiment_eval import createDistributionGraph
+
+#from json import JSONEncoder
+class NumpySupportedEncoder(json.JSONEncoder):
+	"""Because fuck dumping numpy object."""
+	def default(self, obj):
+		if isinstance(obj, np.integer):
+			return int(obj)
+		elif isinstance(obj, np.floating):
+			return float(obj)
+		elif isinstance(obj, np.ndarray):
+			return obj.tolist()
+		elif isinstance(obj, (bytes, bytearray)):
+			return str(obj)
+		elif isinstance(obj, (np.bool, np.bool_)):
+			return bool(obj)
+		else:
+			print(type(obj))
+			return super(NumpySupportedEncoder, self).default(obj)
 
 def custom_vi_cleaner(line, detector_set, transform_dict):
 #	orig_line = line
 	# lowercase, remove diacritics and separate punctuation
 	line = vietnamese_ghost_characters_cleaner(line, detector_set, transform_dict, ignore_error=True)
+	line = split_emoticon(line)
 	cleaned_line = clean(line).lower()
 #	print("Clean: {} -> {}".format(orig_line, cleaned_line))
 	return cleaned_line
@@ -53,11 +73,24 @@ def statReliabilityDataset(dataset):
 			total_stat[key] = total_stat.get(key, 0) + scores[key]
 	return total_stat
 
-def balanceSetByReduction(dataset, debug=False):
+def balanceSetByReduction(dataset, debug=False, reduce_mode="2worst"):
 	stats = statDataset(dataset)
 	categorized_dataset = {k:[item for item in dataset if item[1] == k] for k in stats.keys()}
-	# reduce to an approx. maximum of 20% of dataset size
-	reduce_value = len(dataset) // len(categorized_dataset) + 10
+	if(reduce_mode == "avg"):
+		# reduce to an approx. maximum of 20% of dataset size
+		# assume 50% skew on 5, that will be reduced to 20%, which is around 28% total
+		# if it is too high (80%), the dataset will still reduce it to around 50%. Bad move
+		reduce_value = len(dataset) // len(categorized_dataset) + 10
+	elif(reduce_mode == "2worst"):
+		# reduce to the sum of the two worst items
+		# might be too aggressive, since even rating 4 is affected by the trim
+		reduce_value = sum( list( sorted([val for val in stats.values()]) )[:2] )
+	elif(reduce_mode == "partial"):
+		# reduce only the highest to 40% of AFTER set
+		after_set_prefered_size = sum(list( sorted([val for val in stats.values()]) )[:-1]) * len(stats) / (len(stats) - 1)
+		reduce_value = after_set_prefered_size * 4 / 10
+	else:
+		raise ValueError("Reduce mode {} unsupported".format(reduce_mode))
 	reduced_dataset = {k:v[:reduce_value] for k, v in categorized_dataset.items()}
 	del categorized_dataset
 	balanced_dataset = [item for score, items in reduced_dataset.items() for item in items]
@@ -97,15 +130,6 @@ def balanceSetByPossibleElement(dataset, select_score_fn=_random_select_score_fu
 		balanced_stats = statDataset(result_dataset)
 		print("Data duplicate balance statistic:   correct: {}, balanced by assigning possible elements: {}".format(correct_stats, balanced_stats))
 	return result_dataset
-
-def batch(iterable, n=1, shuffle_batch=False):
-	l = len(iterable)
-	true_range = range(0, l, n)
-	if(shuffle_batch):
-		true_range = list(true_range)
-		shuffle(true_range)
-	for ndx in true_range:
-		yield iterable[ndx:min(ndx + n, l)]
 
 def filterData(data, dump_stream_fn=None, keep_duplicate=False, debug=False):
 	# assume data is cleaned and tokenized
@@ -212,7 +236,7 @@ def balanceSetByAllScores(data, reliability_fn=_default_reliability_function, se
 		print("Balance attempt: from overall {} to {}".format(stats, result_stats))
 	return result_dataset
 
-def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=False, reliability_mode=False, split_train_and_eval=False, debug=False, unprocessed_dataset_location=None, force_manual=False, extended_output=False):
+def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=False, reliability_mode=False, split_train_and_eval=False, debug=False, unprocessed_dataset_location=None, force_manual=False, extended_output=False, save_dataset_pretty=True, reduce_mode="2worst"):
 	"""The main function to process data
 		Args:
 			raw_dataset_call_fn: if no file at unprocessed_dataset_location and save_location, call this to receive the raw data
@@ -222,14 +246,17 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 			split_train_and_eval: if true, split the dataset to train/eval set
 			debug: if true, inner process's debug flag is activate
 			unprocessed_dataset_location: if specified and processing raw data, load the raw from here or dump these data in here
-			force_manual: if true, override all prior processing (no json load). Still dump
+			force_manual: if true, override all prior processing (no json load). Still dump to these location after load
 			extended_output: if true, the value is 2d numpy of score(int 1-5) and certainty(float 0.0-1.0). Used in extended mode 
+			save_dataset_pretty: The dumped file will have pretty print dataset, set to False to disable
+			reduce_mode: the method to balance the dataset by reduction. Possible options are 2worst|avg|partial. Default 2worst
 		Returns:
 			If have dump file, load it up regardless of option
 			If split, return a dict containing `train` and `eval`
 			If not, return the full dict
 			"""
-	assert not (not extended_output and split_train_and_eval), "extended_output must have split_train_and_eval value as True"
+	assert not (extended_output and not split_train_and_eval), "extended_output must have split_train_and_eval value as True"
+	json_dump_kwargs = {"sort_keys":True, "indent": 4} if save_dataset_pretty else {}
 	# Check if save_location have past processed data, if true, load and exit
 	if(os.path.isfile(save_location) and not force_manual):
 		print("Saved data located @ {}".format(save_location))
@@ -241,15 +268,27 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 		print("Detect filtered data saved @{}".format(unprocessed_dataset_location))
 		with io.open(unprocessed_dataset_location, "r", encoding="utf-8") as raw_dataset_file:
 			dataset = json.load(raw_dataset_file)
+		# this to process if passed block but not filter
+		eval_set_size = None
 	else:
 		print("Make data from raw source...")
 		raw_dataset = raw_dataset_call_fn()
-		if(reliability_mode):
-			# process raw data in reduceData (line-score_dict)
-			dataset = reduceData(raw_dataset, debug=debug)
+		if(len(raw_dataset) == 2 and isinstance(raw_dataset, tuple)):
+			print("Train/Eval splitted, process the dataset as a whole and rejoin later")
+			train_set, eval_set = raw_dataset
+			eval_set_size = len(eval_set)
+			dataset = eval_set + train_set
+			if(reliability_mode):
+				print("Create false certainty value exclusively for reliability mode")
+				dataset = [(line, score, 0.0) for line, score in dataset]
 		else:
-			# process in either keep/filter duplicate
-			dataset = filterData(raw_dataset, keep_duplicate=duplicate_mode, debug=debug)
+			eval_set_size = None
+			if(reliability_mode):
+				# process raw data in reduceData (line-score_dict)
+				dataset = reduceData(raw_dataset, debug=debug)
+			else:
+				# process in either keep/filter duplicate
+				dataset = filterData(raw_dataset, keep_duplicate=duplicate_mode, debug=debug)
 		if(unprocessed_dataset_location):
 			print("Dumping filtered data @ {}(overwrite)".format(unprocessed_dataset_location))
 			with io.open(unprocessed_dataset_location, "w", encoding="utf-8") as raw_dataset_file:
@@ -261,26 +300,30 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 					dumpable_dataset = [list(item) for item in dataset]
 				else:
 					dumpable_dataset = dataset
-				json.dump(dumpable_dataset, raw_dataset_file, ensure_ascii=False)
+				json.dump(dumpable_dataset, raw_dataset_file, ensure_ascii=False, cls=NumpySupportedEncoder, **json_dump_kwargs)
 				if(duplicate_mode):
 					del dumpable_dataset
 	# reduce the dataset, balance, and split if necessary
 	# only one or zero options avaiable at once
 	print("Normalize filtered data and split if necessary")
 	assert not duplicate_mode or not reliability_mode, "modes are mutually exclusive"
-	if(duplicate_mode):
+	if(eval_set_size is not None):
+		print("Dataset pre-splitted, do not balance")
+	elif(duplicate_mode):
 		dataset = balanceSetByPossibleElement(dataset, debug=debug, certainty_score=extended_output)
 		# after balancing, reduce anyway
-		dataset = balanceSetByReduction(dataset, debug=debug)
+		dataset = balanceSetByReduction(dataset, debug=debug, reduce_mode=reduce_mode)
 	elif(reliability_mode):
 		dataset = balanceSetByAllScores(dataset, debug=debug, certainty_score=extended_output)
 	else:
-		dataset = balanceSetByReduction(dataset, debug=debug)
+		dataset = balanceSetByReduction(dataset, debug=debug, reduce_mode=reduce_mode)
 	# eval is min(1000, 10% set)
+	distrib_graph_location = os.path.splitext(save_location)[0] + "_distribution.png"
 	if(split_train_and_eval):
-		eval_set_size = min(1000, len(dataset) // 10)
-		# shuffle and split
-		shuffle(dataset)
+		if(eval_set_size is None):
+			# not predetermined split, decide on threshold and shuffle and split
+			eval_set_size = min(1000, len(dataset) // 10)
+			shuffle(dataset)
 		split_data = {
 			"train": dataset[eval_set_size:], 
 			"eval": dataset[:eval_set_size],
@@ -288,10 +331,16 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 		}
 		with io.open(save_location, "w", encoding="utf-8") as save_file:
 			print("Dumping splitted dataset @ {}".format(save_location))
-			json.dump(split_data, save_file, ensure_ascii=False)
+			json.dump(split_data, save_file, ensure_ascii=False, cls=NumpySupportedEncoder, **json_dump_kwargs)
+		with io.open(distrib_graph_location, "wb") as graph_file:
+			print("Graph splitted dataset @ {}".format(distrib_graph_location))
+			createDistributionGraph(graph_file, [split_data["train"], split_data["eval"], dataset], "Data distribution (Split)", legend_names=["train", "eval", "total"])
 		return split_data
 	else:
 		with io.open(save_location, "w", encoding="utf-8") as save_file:
 			print("Dumping un-splitted dataset @ {}".format(save_location))
-			json.dump(dataset, save_file, ensure_ascii=False)
+			json.dump(dataset, save_file, ensure_ascii=False, cls=NumpySupportedEncoder, **json_dump_kwargs)
+		with io.open(distrib_graph_location, "wb") as graph_file:
+			print("Graph un-splitted dataset @ {}".format(distrib_graph_location))
+			createDistributionGraph(graph_file, [dataset], "Data distribution (Whole)", legend_names=["total"])
 		return dataset

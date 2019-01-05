@@ -151,6 +151,11 @@ def replace_model_token(line):
 #  raise Exception("Faulty regex")
   return re.sub(model_regex, "<model> ", line)
 
+# emoticon default splitter
+emoticon_regex = re.compile("([{:s}-{:s}])".format(chr(0x1f600), chr(0x1f64f)))
+def split_emoticon(line):
+	return re.sub(emoticon_regex, " \1 ", line)
+
 # rejoin character plus . (eg: S. Truman)
 middle_name_regex = re.compile("(?=^|\s) ([A-Z])\s\.")
 def rejoin_middle_name(line):

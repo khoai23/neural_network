@@ -1,8 +1,9 @@
 import tensorflow as tf
+import numpy as np
 import os
 
 def _default_printer(*args):
-	print(args)
+	print(*args)
 
 def optimizeLossClean(train_logits, correct_ids, correct_output_length, optimizer="SGD", learning_rate=1.0, decay_fn=None, clip_gradients=5.0, name="optimizer"):
 	"""Create the optimize loss operator
@@ -818,21 +819,128 @@ def saveToPath(session, path, global_step=None):
 	print("Saved data to location {}, global step value {}".format(path, global_step))
 	session.saver = saver
 
-def loadFromPath(session, path):
+def loadFromPath(session, path, checkpoint=None, debug=False):
 	saver = tf.train.Saver() if not hasattr(session, "saver") else session.saver
 	try:
-		directory, file_name = os.path.split(path)
-		latest_path = tf.train.latest_checkpoint(directory, latest_filename="checkpoint")
-		if(latest_path == None):
-			print("Latest checkpoint not found, should abort to skip")
+		if(checkpoint):
+			path = path + "-" + str(checkpoint)
 		else:
-			path = latest_path
+			directory, file_name = os.path.split(path)
+			latest_path = tf.train.latest_checkpoint(directory, latest_filename="checkpoint")
+			if(latest_path == None):
+				print("Latest checkpoint not found, should abort to skip")
+			else:
+				path = latest_path
 		saver.restore(session, path)
+		if(debug and (checkpoint is not None or latest_path is not None)):
+			# only initiate with a verified checkpoint
+			verifySessionLoadSuccess(session, latest_path)
 		print("Load data from location {} completed.".format(path))
+		loaded = True
 	except tf.errors.NotFoundError:
 		print("Skip the load process @ path {} due to file not existing.".format(path))
+		loaded = False
 	except ValueError:
 		print("Path {} not a valid checkpoint. Ignore and continue..".format(path))
+		loaded = False
+#	if(not loaded):
+#		print("Session not loaded, perform initialization by default")
+#		session.run([tf.global_variables_initializer()])
 	session.saver = saver
 	return session
 
+def loadCheckpointVariables(checkpoint_path, tensor_names):
+	"""Copy from inspect_checkpoint tool"""
+#	# import the needed tool
+#	from tensorflow.python.tools import inspect_checkpoint
+	reader = tf.train.NewCheckpointReader(checkpoint_path)
+#	print(reader.debug_string())
+#	checkpoint_namelist = reader.get_variable_to_shape_map()
+	checkpoint_values = [reader.get_tensor(name) for name in tensor_names]
+	return checkpoint_values
+
+def verifySessionLoadSuccess(session, checkpoint_path, suppressError=True):
+	"""Verify that all variables in the checkpoint is loaded into the session
+		Args:
+			session: the session to be checked
+			checkpoint_path: the checkpoint path to be inspected and compare
+			suppressError: if False, will raise Error on wrong load; if True, print out the result of comparison and continue
+		Raise:
+			a general Exception if encounter a wrong load and suppressError flag set to False
+	"""
+#	if(args.debug):
+#		print("All trainable variables in session: {}".format([v.name for v in tf.trainable_variables()]))
+	# load all variables in as numpy
+	all_trainables = tf.trainable_variables()
+	# names are without :0
+	all_names = [v.name.replace(":0", "") for v in tf.trainable_variables()]
+	session_values = session.run(all_trainables)
+	checkpoint_values = loadCheckpointVariables(checkpoint_path, all_names)
+	print("Begin checkpoint verification...")
+	for name, session_val, checkpoint_val in zip(all_names, session_values, checkpoint_values):
+		if(not np.array_equal(session_val, checkpoint_val)):
+			if(not suppressError):
+				raise Exception("Tensor with name {:s} load failed!\nSession is {}, Checkpoint is {}".format(name, session_val, checkpoint_val))
+			else:
+				print("ERROR! Tensor with name {:s} load failed!\nSession is {}, Checkpoint is {}".format(name, session_val, checkpoint_val))
+		else:
+			if(suppressError):
+				print("Tensor {:s} load successfully".format(name))
+
+def exportMetaGraph(file_stream, checkpoint_path=None):
+	"""Load the meta graph at checkpoint_path and export it to a file
+		Args:
+			file_stream: the IOBuffer to feed the graph data into
+			checkpoint_path: if true, load the meta graph into the running session
+				WARNING! This operation will overwrite current default graph. Do not use during actual running operation
+	"""
+	if(checkpoint_path):
+		saver = tf.train.import_meta_graph(checkpoint_path + ".meta")
+	all_graph_ops = tf.get_default_graph().get_operations()
+	for item in all_graph_ops:
+		file_stream.write(str(item))
+	return file_stream
+
+def _createTrashValue(dtype):
+	if(dtype == tf.string):
+		return "trash trash trash"
+	elif(dtype.is_integer):
+		return 0
+	elif(dtype.is_floating):
+		return 0.0
+	elif(dtype.is_bool):
+		return False
+	else:
+		raise ValueError("Dtype {} unsupported".format(dtype))
+
+def _createTrashShapedValue(shape, dtype):
+#	print("Creating trash {} with shape {}".format(dtype, shape))
+	trash_value = _createTrashValue(dtype)
+	# shapify
+	for dim in reversed(shape):
+		trash_value = [trash_value] * dim
+	return np.array(trash_value)
+
+def trySaveSessionValues(session, feed_dict=None):
+	"""Save all session tensor state when feeded feed_dict|trash values """
+	graph = tf.get_default_graph()
+	if(feed_dict is None):
+		print("Generate trash data..")
+		placeholders = [x for x in graph.get_operations() if x.type == "Placeholder"]
+		placeholder_tensors = [graph.get_tensor_by_name(x.name + ":0") for x in placeholders]
+		placeholder_shapes = [x.get_shape().as_list() for x in placeholder_tensors]
+		trash_shapes = [[dim if dim is not None else 1 for dim in shape] for shape in placeholder_shapes]
+		trash_values = [_createTrashShapedValue(shape, tensor.dtype) for shape, tensor in zip(trash_shapes, placeholder_tensors)]
+#		print(trash_values)
+		feed_dict = {tensor:value for tensor, value in zip(placeholder_tensors, trash_values)}
+	# only take fetchable (branched condition) and non-save non-training tensor
+	all_tensors = [t for op in graph.get_operations() for t in op.values() if graph.is_fetchable(t)]
+	exclusions = ("while","save", "train", "Gradient", "Initializer", "Assign")
+	all_tensors = [t for t in all_tensors if all((ex not in t.name for ex in exclusions))]
+#	print([t.name for t in all_tensors])
+	all_tensor_values = session.run(all_tensors, feed_dict=feed_dict)
+#	all_tensor_values = [val.tolist() if isinstance(val, np.ndarray) 
+#											else str(val) if isinstance(val, (bytes, bytearray))
+#											else val 
+#														for val in all_tensor_values]
+	return {t.name:v for t, v in zip(all_tensors, all_tensor_values)}
