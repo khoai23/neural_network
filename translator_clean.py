@@ -1,5 +1,5 @@
 import numpy as np
-import sys, io, os, json, pickle, time, random
+import sys, io, os, pickle, time, random
 import ffBuilder as builder
 import translator as legacy
 import tensorflow as tf
@@ -121,7 +121,7 @@ def createSession(args):
 		# run decoder, get logits
 		decoder_result = builder.createDecoderClean(decoder_inputs, encoder_state, inputs_length=tgt_inputs_length_placeholder, 
 				attention_mechanism=tf.contrib.seq2seq.LuongAttention, encoder_outputs=encoder_outputs, encoder_length=src_inputs_length_placeholder,
-				projection_layer=projection_layer, created_dropout=dropout_placeholder, training=True, cell_size=args.num_units)
+				created_dropout=dropout_placeholder, training=True, cell_size=args.num_units)
 		# create train_op
 		correct_decoder_outputs = tgt_inputs_placeholder
 		train_loss, token_loss, train_op = builder.optimizeLossClean(decoder_result["logits"], correct_decoder_outputs, tgt_inputs_length_placeholder)
@@ -141,7 +141,7 @@ def createSession(args):
 		# run decoder, get ids/state/attention bundled in dict
 		decoder_result = builder.createDecoderClean(start_tokens, encoder_state, embedding_fn=tgt_embedding_fn, end_token=end_token_idx, 
 				attention_mechanism=tf.contrib.seq2seq.LuongAttention, encoder_outputs=encoder_outputs, encoder_length=src_inputs_length_placeholder, 
-				projection_layer=projection_layer, training=False, cell_size=args.num_units, beam_size=args.beam_size)
+				training=False, cell_size=args.num_units, beam_size=args.beam_size)
 		result = {
 			"predict_inputs": (src_inputs_placeholder, None, src_inputs_length_placeholder, None), 
 			"predictions" : decoder_result["predictions"],
@@ -150,7 +150,7 @@ def createSession(args):
 			"alignment_history": decoder_result["alignment_history"]
 		}
 	else:
-		raise ArgumentTypeError("Mode not valid: {:s}".format(mode))
+		raise argparse.ArgumentTypeError("Mode not valid: {:s}".format(mode))
 	
 	# create session and initialize
 	config = tf.ConfigProto()
@@ -275,5 +275,5 @@ if __name__ == "__main__":
 			infer_file.write("\n".join(all_predictions))
 		print("Reverse lookup and ordered, time passed {:.2f}s".format(time.time() - timer))
 	else:
-		raise NotImplementedError("Not coded!")
+		raise NotImplementedError("Mode {} not coded!".format(args.mode))
 

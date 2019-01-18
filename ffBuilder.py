@@ -835,14 +835,15 @@ def loadFromPath(session, path, checkpoint=None, debug=False):
 		if(debug and (checkpoint is not None or latest_path is not None)):
 			# only initiate with a verified checkpoint
 			verifySessionLoadSuccess(session, latest_path)
+			session.latest_path = latest_path
 		print("Load data from location {} completed.".format(path))
-		loaded = True
+#		loaded = True
 	except tf.errors.NotFoundError:
 		print("Skip the load process @ path {} due to file not existing.".format(path))
-		loaded = False
+#		loaded = False
 	except ValueError:
 		print("Path {} not a valid checkpoint. Ignore and continue..".format(path))
-		loaded = False
+#		loaded = False
 #	if(not loaded):
 #		print("Session not loaded, perform initialization by default")
 #		session.run([tf.global_variables_initializer()])

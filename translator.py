@@ -2,7 +2,7 @@ import ffBuilder as builder
 import numpy as np
 import tensorflow as tf
 import sys, os, pickle, argparse, io, time, random, json
-from calculatebleu import *
+from calculatebleu import BLEU
 
 def getVocabFromVocabFile(fileDir):
 	file = io.open(fileDir, 'r', encoding='utf-8')
@@ -133,7 +133,7 @@ def createCouplingFromVocabFile(args):
 	
 	counter = 0
 	tgtWordToId, tgtIdToWord = {}, {}
-	tgtEmbeddingVector = []
+#	tgtEmbeddingVector = []
 	for key in tgtWord:
 		tgtWordToId[key] = counter
 		tgtIdToWord[counter] = key
@@ -268,8 +268,8 @@ def createSession(args, embedding):
 		if(args.decay_threshold >= 0):
 			threshold = tf.constant(args.decay_threshold)
 			def decayFunction(trainingRate, globalSteps):
-				return tf.cond(global_steps >= threshold, 
-							true_fn=lambda: exponential_decay(trainingRate, tf.maximum(globalSteps - threshold, 0), args.decay_steps, args.decay_factor, staircase=True),
+				return tf.cond(globalSteps >= threshold, 
+							true_fn=lambda: tf.train.exponential_decay(trainingRate, tf.maximum(globalSteps - threshold, 0), args.decay_steps, args.decay_factor, staircase=True),
 							false_fn=trainingRate)
 		else:
 			decayFunction = None
@@ -645,7 +645,7 @@ def tryLoadOrSaveParams(args, exception=None):
 		loaderFunc = json.load
 		saverFunc = json.dump
 	else:
-		raise ArgumentTypeError("Unrecognized params_mode {:s}, must be json/pickle.".format(args.params_mode))
+		raise argparse.ArgumentTypeError("Unrecognized params_mode {:s}, must be json/pickle.".format(args.params_mode))
 
 	if(args.load_params):
 		with io.open(args.params_path, 'rb') as paramFile:
@@ -681,7 +681,7 @@ def constructParser(loadDefault=False):
 		# Run argparse
 	parser = argparse.ArgumentParser(description='Create training examples from resource data.')
 	# OVERALL CONFIG
-	parser.add_argument('-m','--mode', type=str, default='train', help='Mode to run the file. Currently only train|infer')
+	parser.add_argument('-m','--mode', choices=["train", "infer", "eval"], type=str, default='train', help='Mode to run the file. Currently only train|infer')
 	parser.add_argument('--read_mode', type=str, default='embedding', help='Read binary, pickled, dictionary files as embedding, or vocab files as vocab. Default embedding')
 	parser.add_argument('--import_default_dict', action='store_false', help='Do not use the varied length original embedding instead of the normalized version.')
 	parser.add_argument('--train_embedding', action='store_true', help='Train the embedding vectors of words during the training. Will be forced to True in vocab read_mode.')
@@ -828,7 +828,7 @@ def loadDataByMode(args, embeddingTuple):
 		# data will be returned as (input - inputLength) list of batches, (correctOutput) list of batches, and reordering indexes
 		return list(inferInput), correctData, correctIndex
 	else:
-		raise ArgumentTypeError("args.mode unrecognized, must be train/infer: {:s}".format(args.mode))
+		raise argparse.ArgumentTypeError("args.mode unrecognized, must be train/infer: {:s}".format(args.mode))
 
 if __name__ == "__main__":
 	args = constructParser()

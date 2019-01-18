@@ -134,6 +134,11 @@ def replace_html_entity_reg(line):
 def replace_html_entity(line):
   return html.unescape(line)
 
+html_tag_regex = re.compile("<.*?>")
+# brute force removal
+def remove_html_tags(line):
+  return re.sub(html_tag_regex, " ", line)
+
 remove_leading_idx = re.compile("\\d+\t")
 # wikipedia have first number and tab
 def remove_first_number(line):

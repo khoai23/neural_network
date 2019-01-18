@@ -9,7 +9,7 @@ import sentiment_models as model_lib
 from sentiment_data import loadAndProcessDataset, generate_tranform_dict, custom_vi_cleaner, NumpySupportedEncoder
 # constant for the moment
 MODEL_DEFAULT_LOCATION = "/home/quan/Workspace/Data/model/espresso/default"
-DATA_DEFAULT_LOCATION = "/home/quan/Workspace/Data/espresso/ttn_data.json_2018-11-12"
+EMB_DEFAULT_LOCATION = "/home/quan/Workspace/Data/espresso/vi_trimmed_embedding.txt"
 
 def readPretrainedEmbedding(file_path):
 	with io.open(file_path, "r", encoding="utf8") as emb_file:
@@ -44,7 +44,8 @@ def readUnknownWords(recognized_words, list_sentences, occurence_floor=5):
 				counter_orig_dict += 1
 			counter_word_nums += 1
 	# filter occurence
-	additional_words = [word for word, value in unk_words.items() if value >= occurence_floor]
+	# sort to make sure that the words are in correct order each run, assuming using the same dataset
+	additional_words = list(sorted( [word for word, value in unk_words.items() if value >= occurence_floor] ))
 	set_additional_words = set(additional_words)
 	counter_curr_dict = sum( (1 for sentence in list_sentences for word in sentence.strip().split() if word in recognized_words or word in set_additional_words) )
 	print( "Caught {:d} additional words, raising word coverage from {:.2f}% to {:.2f}%".format(len(additional_words), float(counter_orig_dict) / float(counter_word_nums) * 100.0, float(counter_curr_dict) / float(counter_word_nums) * 100) )
@@ -78,45 +79,71 @@ def readRawData(folder, train_folder="train", test_folder="test", train_file_for
 			# the blank are removed in sentiment_data process, but just in case
 			train_data_list.extend( ((custom_vi_cleaner(line, detector_set, transform_dict), rating_type) for line in read_file.readlines() if line.strip() != "") )
 	eval_data_list = []
-	with io.open(os.path.join(folder, test_folder, test_file), "r", encoding="utf-8") as read_file:
-		score_convert_dict = {"POS":"5", "NEG":"1", "NEU":"3"}
-		for test_line, answer_line in zip(read_file, read_file):
-			score = score_convert_dict[answer_line.strip()]
-			# read two lines at once, and add them into the eval set
-			eval_data_list.append( (custom_vi_cleaner(test_line, detector_set, transform_dict), score) )
+	if("{:s}" in test_file):
+		print("Test file is formatable, do as train")
+		for file_type, rating_type in zip(["positive", "neutral", "negative"], ["5", "3", "1"]):
+			with io.open(os.path.join(folder, train_folder, train_file_format.format(file_type)), "r", encoding="utf-8") as read_file:
+				# the blank are removed in sentiment_data process, but just in case
+				eval_data_list.extend( ((custom_vi_cleaner(line, detector_set, transform_dict), rating_type) for line in read_file.readlines() if line.strip() != "") )
+	else:
+		print("Test file is non-formatable, read as one big test")
+		with io.open(os.path.join(folder, test_folder, test_file), "r", encoding="utf-8") as read_file:
+			score_convert_dict = {"POS":"5", "NEG":"1", "NEU":"3"}
+			for test_line, answer_line in zip(read_file, read_file):
+				score = score_convert_dict[answer_line.strip()]
+				# read two lines at once, and add them into the eval set
+				eval_data_list.append( (custom_vi_cleaner(test_line, detector_set, transform_dict), score) )
 #	for line, score in eval_data_list:
 #		print("{} ({})".format(line, score))
 	return train_data_list, eval_data_list
 
-def tryReadDataFromPath(path):
+ALL_LOCATIONS = [
+	{"type":"folder", "name":"SA-2016", "path":"/home/quan/Workspace/Data/espresso", "train_folder":"SA2016-training_data", "test_folder":"SA2016-TestData-Ans/SA2016-TestData-Ans", "train_file_format":"SA-training_{:s}.txt", "test_file":"test_raw_ANS.txt"},
+	{"type":"folder", "name":"IMDB", "path":"/home/quan/Workspace/Data/espresso/aclImdb", "train_folder":"train", "test_folder":"test", "train_file_format":"{:s}.txt", "test_file":"{:s}.txt"},
+	{"type":"file", "name":"json_test", "path":"/home/quan/Workspace/Data/espresso/ttn_data.json_2018-11-12", "input_field":"ttn_bl_noi_dung", "output_field":"ttn_bl_diem"},
+]
+
+def tryReadDataFromPath(data_config):
+	if(isinstance(data_config, str)):
+		data_config = next((conf for conf in ALL_LOCATIONS if conf["name"] == data_config))
 	# currently no customization option.
-	if(os.path.isdir(path)):
+	path_type = data_config.pop("type")
+	data_config.pop("name")
+	path = data_config.pop("path")
+	if(os.path.isdir(path) and path_type == "folder"):
 		print("Path {:s} is directory, use SA-2016 format".format(path))
-		return readRawData(path, train_folder="SA2016-training_data", test_folder="SA2016-TestData-Ans/SA2016-TestData-Ans", train_file_format="SA-training_{:s}.txt", test_file="test_raw_ANS.txt")
-	elif(os.path.isfile(path)):
+		return readRawData(path, **data_config)
+	elif(os.path.isfile(path) and path_type == "file"):
 		print("Path {:s} is single file, use JSON reading format".format(path))
-		return readJSONData(path, input_field="ttn_bl_noi_dung", output_field="ttn_bl_diem")
+		return readJSONData(path, **data_config)
 	else:
-		raise ValueError("Path {:s} invalid".format(path))
+		raise ValueError("Path {:s} invalid, mismatch with {}".format(path, path_type))
 
 def constructParser():
 	parser = argparse.ArgumentParser(description='A rewrite of sentiment analysis.')
 	parser.add_argument('-m','--mode', type=str, default='default', choices=["default", "data_process", "train", "infer", "eval", "export", "debug"], help='Mode of the parser. Default all (default)')
 	parser.add_argument('--data_processing_mode', type=str, default='reliability', choices=["filter", "duplicate", "reliability"], help='Data processing mode. default reliability')
 	parser.add_argument('--model_structure', type=str, default='attention', choices=["attention", "attention_extended", "attention_multimodal", "sum"], help='The model structure to be used in sentiment model. Default attention')
-	parser.add_argument('--data_file', type=str, default=DATA_DEFAULT_LOCATION, help='Location of files to train, default ./')
+#	parser.add_argument('--data_file', type=str, default=DATA_DEFAULT_LOCATION, help='Location of files to train, default ./')
+	parser.add_argument('--data_config', type=str, choices=[conf["name"] for conf in ALL_LOCATIONS], default=None, help='Location of files to train, default ./')
 	parser.add_argument('--model_dir', type=str, default="./", help='Location of files to train, default ./')
 	parser.add_argument('--gpu_disable_allow_growth', action="store_true", help='Use to disable gpu_allow_growth')
 	parser.add_argument('--debug', action="store_true", help='Use to enable debug information')
 	parser.add_argument('--force_manual', action="store_true", help='Enable to force rebuilding dataset')
-	parser.add_argument('--eval_print_alignment', action="store_true", help='Enable to eval by saving an alignment image to a specified location')
+	parser.add_argument('--use_trained_embedding', action="store_true", help='Enable to use trained embeddings, specified with trained_embedding_location')
+	parser.add_argument('--trained_embedding_location', type=str, default=EMB_DEFAULT_LOCATION, help='The location of the embedding to be used.')
 	parser.add_argument('--checkpoint_index', type=str, default=None, help='The index of the checkpoint to be retrieved for eval/export. Default None (latest)')
+	parser.add_argument('--balance_reduce_mode', type=str, choices=["2worst", "partial", "avg"], default="2worst", help='Only in data_processing_mode reliability. The method used to balance the dataset. See sentiment_data\'s balanceSetByReduction for detail')
+	parser.add_argument('--use_weighted_loss', action="store_true", help='Enable to use weighted loss, currently only available to attention_extended')
+	# extra arguments dependent on modes
+	parser.add_argument('--eval_print_alignment', action="store_true", help='Enable to eval by saving an alignment image to a specified location')
+	parser.add_argument('--export_override', action="store_true", help='If true, override the export folder as needed')
 	return parser.parse_args()
 
 def createModel(args, dataset):
 	# embedding path
-	if(True):
-		words, embeddings = readPretrainedEmbedding(args.embedding_file)
+	if(args.use_trained_embedding):
+		words, embeddings = readPretrainedEmbedding(args.trained_embedding_location)
 		# pretrained, value is the index (int)
 		default_word_idx = words.index(args.default_word)
 		print("Default idx detected: {:d}".format(default_word_idx))
@@ -128,20 +155,27 @@ def createModel(args, dataset):
 	# read the dataset sentences and create the new words base on it
 	if(isinstance(dataset, dict) and "train" in dataset and "eval" in dataset):
 		print("Dataset is splitted dict")
-		dataset_sentences = tuple( zip(*(dataset["train"] + dataset["eval"])) )[0]
+		dataset_sentences, dataset_scores, *_ = zip( *(dataset["train"] + dataset["eval"]) )
 	elif(isinstance(dataset, list)):
 		print("Dataset is unsplitted list")
-		dataset_sentences, _ = zip( *dataset )
+		dataset_sentences, dataset_scores = zip( *dataset )
 	else:
 		raise ValueError("Dataset error, please recheck")
-	additional_words = readUnknownWords(set(words), dataset_sentences)
 	# initiate entrance point and string_to_id func
+	additional_words = readUnknownWords(set(words), dataset_sentences)
+	# use the dataset_score to create the weighted_loss dict
+	if(args.use_weighted_loss):
+		weighted_loss = {}
+		for score in dataset_scores:
+			weighted_loss[score] = weighted_loss.get(score, 0) + 1
+	else:
+		weighted_loss = None
 
 	if(args.model_structure == "attention"):
-		model = model_lib.SentimentRNNAttention(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
+		model = model_lib.SentimentRNNAttention(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
 		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
 	elif(args.model_structure == "attention_extended"):
-		model = model_lib.SentimentRNNAttentionExtended(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
+		model = model_lib.SentimentRNNAttentionExtended(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
 		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
 	elif(args.model_structure == "attention_multimodal"):
 		model = model_lib.SentimentRNNAttentionMultimodal(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
@@ -161,7 +195,6 @@ if __name__ == "__main__":
 	if(not os.path.isdir(args.model_dir)):
 		print("Model folder not ready, creating new...")
 		os.makedirs(args.model_dir)
-	args.embedding_file = "/home/quan/Workspace/Data/espresso/vi_trimmed_embedding.txt"
 #	args.embedding_file = os.path.join(args.data_dir, args.embedding_file)
 	args.save_file = os.path.join(args.model_dir, "default_save")
 	args.export_dir = os.path.join(args.model_dir, "export")
@@ -171,7 +204,6 @@ if __name__ == "__main__":
 	args.dropout = 0.8
 	args.shuffle_batch = True
 	args.default_word = "<unk>"
-	args.balance_reduce_mode = "2worst"
 	# add a mode check function to decide which part of the program to be used
 	args.check_mode = lambda check: args.mode == check or args.mode == "default"
 	if(args.model_structure == "attention_extended" or args.model_structure == "attention_multimodal"):
@@ -189,7 +221,7 @@ if __name__ == "__main__":
 		print("Load or process data..")
 		duplicate_mode = args.data_processing_mode == "duplicate"
 		reliability_mode = args.data_processing_mode == "reliability"
-		full_data_load_function = lambda: tryReadDataFromPath(args.data_file)
+		full_data_load_function = lambda: tryReadDataFromPath(args.data_config)
 		dataset = loadAndProcessDataset(full_data_load_function, data_dump_file, unprocessed_dataset_location=block_dump_file, duplicate_mode=duplicate_mode, reliability_mode=reliability_mode, split_train_and_eval=True, debug=args.debug, force_manual=args.force_manual, extended_output=args.is_extended_output, reduce_mode=args.balance_reduce_mode)
 		if(isinstance(dataset, dict)):
 			print("Data loading process completed (splitted), train {}, eval {}".format(len(dataset["train"]), len(dataset["eval"])))
@@ -202,6 +234,7 @@ if __name__ == "__main__":
 	session = sentiment_model._session_dictionary["session"]
 	session.run([tf.global_variables_initializer(), tf.tables_initializer()])
 	sentiment_model.loadSession()
+
 	print("Build and attempt load session done.")
 	if(args.mode == "debug"):
 #		with io.open("graph_str.txt", "w", encoding="utf-8") as graph_file:
@@ -267,4 +300,5 @@ if __name__ == "__main__":
 		sentiment_model.evalSession(eval_set, detailed=True, alignment_sample=args.eval_print_alignment, alignment_file_path=args.save_file)
 	
 	if(args.check_mode("export")):
-		sentiment_model.exportSession()
+		checkpoint = args.checkpoint_index if args.checkpoint_index else 0
+		sentiment_model.exportSession(export_sub_folder=checkpoint, override=args.export_override)

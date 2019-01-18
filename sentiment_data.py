@@ -1,5 +1,5 @@
 # cleaner functions
-from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner, split_emoticon
+from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner, split_emoticon, remove_html_tags
 from scripts.tokenize_word import clean
 from xer import levenshtein
 from random import shuffle
@@ -28,6 +28,7 @@ class NumpySupportedEncoder(json.JSONEncoder):
 def custom_vi_cleaner(line, detector_set, transform_dict):
 #	orig_line = line
 	# lowercase, remove diacritics and separate punctuation
+	line = remove_html_tags(line)
 	line = vietnamese_ghost_characters_cleaner(line, detector_set, transform_dict, ignore_error=True)
 	line = split_emoticon(line)
 	cleaned_line = clean(line).lower()
@@ -214,7 +215,7 @@ def _default_select_score_function(score_dict):
 	# default: select the case with the highest
 	return max(score_dict.items(), key=lambda x: x[1])[0]
 
-def balanceSetByAllScores(data, reliability_fn=_default_reliability_function, select_score_fn=_default_select_score_function, certainty_score=False, debug=False):
+def balanceSetByAllScores(data, reliability_fn=_default_reliability_function, select_score_fn=_default_select_score_function, certainty_score=False, reduce_mode="2worst", debug=False):
 	if(debug):
 		stats = statReliabilityDataset(data)
 	# first, for each comment, choose the score basing on the select_score_fn and the reliability rating
@@ -224,7 +225,7 @@ def balanceSetByAllScores(data, reliability_fn=_default_reliability_function, se
 	# sort the data basing on the rating in the descending order
 	rating_sorted_data = sorted(bundled_data, key=lambda item: item[0][1], reverse=True)
 	# run the reduce as normal, this will clip the data and keep those with the better rating(surer and rarer)
-	reduced_dataset = balanceSetByReduction(rating_sorted_data)
+	reduced_dataset = balanceSetByReduction(rating_sorted_data, reduce_mode=reduce_mode)
 	# un-bundle the set, currently discarding the rel_rating
 	if(certainty_score):
 		# keep the rel_rating
@@ -314,7 +315,7 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 		# after balancing, reduce anyway
 		dataset = balanceSetByReduction(dataset, debug=debug, reduce_mode=reduce_mode)
 	elif(reliability_mode):
-		dataset = balanceSetByAllScores(dataset, debug=debug, certainty_score=extended_output)
+		dataset = balanceSetByAllScores(dataset, debug=debug, certainty_score=extended_output, reduce_mode=reduce_mode)
 	else:
 		dataset = balanceSetByReduction(dataset, debug=debug, reduce_mode=reduce_mode)
 	# eval is min(1000, 10% set)

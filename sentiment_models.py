@@ -1,5 +1,4 @@
 import tensorflow as tf
-from ffBuilder import trySaveSessionValues, exportMetaGraph
 import ffBuilder as builder
 import numpy as np
 import os, time, io
@@ -7,13 +6,8 @@ from sentiment_eval import createRatingMaps, createHeatmapImage
 from random import shuffle
 
 class SentimentModel:
-	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True):
-		self._save_path = save_path
-		self._export_path = export_path
-		self._batch_size = batch_size
-		self._debug = debug
-		self._shuffle_batch = shuffle_batch
-		self._prev_stat = None
+	def __init__(self):
+		raise NotImplementedError("Base abstract model, cannot initialize")
 
 	def buildSession(self, *args, **kwargs):
 		raise NotImplementedError("Base model, no session")
@@ -65,16 +59,6 @@ class SentimentModel:
 		}, main_op=tf.tables_initializer(), strip_default_attrs=True)
 		export_builder.save()
 		print("Serve-able model exported at location {}, subfolder {}".format(export_path, export_sub_folder))
-
-class SentimentRNNAttention(SentimentModel):
-	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True):
-		self._save_path = save_path
-		self._export_path = export_path
-		self._batch_size = batch_size
-		self._debug = debug
-		self._shuffle_batch = shuffle_batch
-		self._prev_stat = None
-		self._attention_names = None
 
 	def _buildLookupTable(self, words, table_vectors, trainable_words=None, default_word_idx=None, scope="embedding"):
 		"""Build a lookup hash table
@@ -138,6 +122,153 @@ class SentimentRNNAttention(SentimentModel):
 		result_sigmoid = tf.minimum(tf.cast(result_placeholder, tf.float32) - 1.0, 4.0) / 4.0
 		return result_placeholder, result_sigmoid
 
+	def _createTrainingOp(self, entropy, optimizer, learning_rate, result_score=None):
+		"""Create the training ops basing on the values
+			Args:
+				entropy: float [batch_size], value to minimize
+				optimizer: str, the optimizer to use
+				learning_rate: float, the learning rate
+				result_score: float/int [batch_size], the correct score
+			Returns:
+				the training operation to be invoked during training
+		"""
+		if(self._loss_weight is not None):
+			print("Use weighted loss")
+			int_result_score = tf.to_int32(result_score)
+			loss_weights = self._buildWeightedLoss(int_result_score)
+			entropy = entropy * loss_weights
+		loss = tf.reduce_mean(entropy, name="loss")
+		global_step = tf.train.get_or_create_global_step()
+		return tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer, clip_gradients=5.0, name="train_op"), loss
+
+class SentimentCNNPooledModel(SentimentModel):
+	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):
+		self._save_path = save_path
+		self._export_path = export_path
+		self._batch_size = batch_size
+		self._debug = debug
+		self._shuffle_batch = shuffle_batch
+
+	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD", learning_rate=1.0):
+		"""Build the session using a bidirectional encoder and CNN's pooling
+			Args:
+				table_words: list, words loaded from the embedding reader
+				table_vectors: numpy array 2d, vectors correlating with the words
+				table_default_idx: int, the index of the <unk> token
+				cell_size: the size of the encoder cell
+				additional_words: a list of additional words to be added into table_words if exist. Their vectors will be randomized and trained unlike the table_vectors
+				gpu_allow_growth: if set True, the tensorflow will only expand to the size it needs
+			Returns:
+				dict of
+					session: finished tf.Session with the graph initialized
+					placeholders: the placeholders used to either train or evaluate. inputs(str), outputs(float 0.0-1.0), dropout(float 0.0-1.0)
+					training ops: the loss and train operation for training mode. tensor (float) and op
+					predictions: the predictions in inference. tensor(float)
+		"""
+		# initialize the session
+		config = tf.ConfigProto()
+		config.gpu_options.allow_growth = gpu_allow_growth
+		session = tf.Session(config=config)
+		# create the lookup word table
+		word_table, embeddings_tensor = self._buildLookupTable(table_words, table_vectors, trainable_words=additional_words, default_word_idx=table_default_idx)
+		# create the inputs and lookup the ids by the table
+		input_placeholder, input_tokenized_dense, input_length = self._buildInputSection()
+		input_indices = word_table.lookup(input_tokenized_dense, name="ids_input")
+		# lookup the indices by the embeddings
+		inputs = tf.nn.embedding_lookup(embeddings_tensor, input_indices)
+		# MISC
+		result_placeholder, result_sigmoid = self._buildTrainingInputSection()
+		dropout_placeholder = tf.placeholder_with_default(1.0, shape=(), name="dropout")
+		# directly apply the CNN over the inputs
+		predictions_raw, entropy = self._buildPredictionSection(inputs, input_length, tf.shape(inputs)[-1], result_placeholder)
+
+		# compute loss from predictions to true (result)
+		predictions = tf.nn.sigmoid(predictions_raw, name="prediction_sigmoid")
+		prediction_rating = tf.cast(1.5 + predictions * 4.0, dtype=tf.int32, name="predictions")
+		# create train_op
+		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, result_score=result_placeholder)
+		# initialize
+		self._session_dictionary = {
+			"session": session, 
+			"placeholders": (input_placeholder, result_placeholder, dropout_placeholder), 
+			"training_ops":(loss, train_op), 
+			"predictions_raw": predictions,
+			"predictions": prediction_rating
+		}
+		return self._session_dictionary
+
+	def _buildCNN(self, inputs, cnn_config, dropout, dense_units_size=128):
+		inputs = tf.expand_dims(inputs, axis=-1)
+		layer_result = inputs
+		# construct CNN using config
+		for idx, item in enumerate(cnn_config):
+			(conv2d_filter_size, conv2d_kernel_size), (pool_size, pool_stride) = item
+			conv2d_layer = tf.layers.conv2d(layer_result, filters=conv2d_filter_size, kernel_size=conv2d_kernel_size, activation=tf.nn.relu, name="conv2d_layer_{:d}".format(idx))
+			pool_layer = tf.layers.max_pooling2d(conv2d_layer, pool_size=pool_size, strides=pool_stride, name="pool_layer_{:d}".format(idx))
+			layer_result = pool_layer
+		# flatten and use dense layer
+		flattened_result = tf.reshape(layer_result, [tf.shape(inputs)[0], -1])
+		dense_result = tf.layers.dense(flattened_result, dense_units_size, name="dense_first_layer")
+		# add dropout
+		result_with_dropout = tf.layers.dropout(dense_result, rate=dropout)
+		logits = tf.layers.dense(result_with_dropout, 1, name="logits")
+		return logits
+
+	def _buildPredictionSection(self, cnn_output, cnn_length, cnn_size, result_sigmoid):
+		"""Build the prediction part on a CNN structure
+			Args:
+				cnn_output: the output of the cnn process, [batch_size, length, cnn_size]
+				cnn_length: the length of the input, use to mask the result
+				cnn_size: the size of the cnn process
+				result_sigmoid: the correct result, converted to sigmoid (0-1)
+			Returns:
+				tuple of:
+					predictions: the raw prediction, unscaled (-inf, inf), [batch_size]
+					entropy: the entropy between the prediction and the result, [batch_size]
+		"""
+		predictions_raw, predictions_attention = createEncoderAttention(cnn_size, cnn_output, cnn_length)
+		entropy = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_sigmoid, logits=predictions_raw, name="entropy")
+		predictions_attention = tf.transpose(predictions_attention, perm=[0, 2, 1])
+		return predictions_raw, predictions_attention, entropy
+
+class SentimentRNNAttention(SentimentModel):
+	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):
+		if(loss_weight is not None):
+			assert isinstance(loss_weight, dict)
+			self._loss_weight = [ float(loss_weight[str(i+1)]) for i in range(5)]
+		else:
+			self._loss_weight = None
+		self._save_path = save_path
+		self._export_path = export_path
+		self._batch_size = batch_size
+		self._debug = debug
+		self._shuffle_batch = shuffle_batch
+		self._prev_stat = None
+		self._attention_names = None
+
+	def _buildWeightedLoss(self, result_tensor):
+		"""This assume that self._loss_weight exist as a dict.
+			Args:
+				result_tensor: the tensor containing the correct rating. [batch_size] of int 1-5
+			Returns:
+				a correct tensor of [batch_size], containing the weights
+		"""
+		# the weight are inversely proportional to its percentage to the sum, thus it is sum / occ
+		sum_loss_weight = sum(self._loss_weight)
+		weighted_loss = tf.constant([sum_loss_weight / occurence for occurence in self._loss_weight], name="weighted_loss")
+		# tile the losses to [5, batch_size]
+		batch_size = tf.shape(result_tensor)[0]
+#		tiled_weights = tf.tile(tf.expand_dims(weighted_loss, axis=0), [batch_size, 1])
+#		flattened_weights = tf.reshape(tiled_weights, [-1])
+		# nvm, can tile it from the start
+		flattened_weights = tf.tile(weighted_loss, [batch_size])
+		# create the selector
+		# need a -1 since it ran from 1-5 while we want selector in range 0-4 per bracket
+		selector = result_tensor + tf.range(batch_size, dtype=result_tensor.dtype) * 5 - 1
+		# select
+		loss_weights = tf.gather(flattened_weights, selector, name="loss_weights")
+		return loss_weights
+
 	def _buildPredictionSection(self, rnn_output, rnn_length, rnn_size, result_sigmoid):
 		"""Build the prediction part atop the result of the bidirectional RNN set
 			Args:
@@ -156,19 +287,6 @@ class SentimentRNNAttention(SentimentModel):
 		predictions_attention = tf.transpose(predictions_attention, perm=[0, 2, 1])
 		return predictions_raw, predictions_attention, entropy
 
-	def _createTrainingOp(self, entropy, optimizer, learning_rate):
-		"""Create the training ops basing on the values
-			Args:
-				entropy: float [batch_size], value to minimize
-				optimizer: the optimizer to use
-				learning_rate: the learning rate
-			Returns:
-				the training operation to be invoked during training
-		"""
-		loss = tf.reduce_mean(entropy, name="loss")
-		global_step = tf.train.get_or_create_global_step()
-		return tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer, clip_gradients=1.0, name="train_op"), loss
-
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD", learning_rate=1.0):
 		"""Build the session using a bidirectional encoder and attention structure
 			Args:
@@ -185,7 +303,6 @@ class SentimentRNNAttention(SentimentModel):
 					training ops: the loss and train operation for training mode. tensor (float) and op
 					predictions: the predictions in inference. tensor(float)
 		"""
-		debug = self._debug
 		# initialize the session
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth = gpu_allow_growth
@@ -207,7 +324,7 @@ class SentimentRNNAttention(SentimentModel):
 		predictions = tf.nn.sigmoid(predictions_raw, name="prediction_sigmoid")
 		prediction_rating = tf.cast(1.5 + predictions * 4.0, dtype=tf.int32, name="predictions")
 		# create train_op
-		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate)
+		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, result_score=result_placeholder)
 		# initialize
 		self._session_dictionary = {
 			"session": session, 
@@ -232,7 +349,7 @@ class SentimentRNNAttention(SentimentModel):
 		session = session_dictionary["session"]
 		input_pl, result_pl, dropout_pl = session_dictionary["placeholders"]
 		loss_t, train_op = trainers = session_dictionary["training_ops"] 
-		predictions = session_dictionary["predictions"]
+#		predictions = session_dictionary["predictions"]
 		training_dropout = dropout
 		timer = time.time()
 		
@@ -322,13 +439,22 @@ class SentimentRNNAttention(SentimentModel):
 		input_pl, _, _ = self._session_dictionary["placeholders"]
 		eval_inputs, eval_results = zip(*dataset)
 		eval_results = [int(res) for res in eval_results]
+		batched_eval_inputs = batch(list(eval_inputs), n=self._batch_size, shuffle_batch=False)
 		prediction_tensor = self._session_dictionary["predictions"]
 		if(alignment_sample):
 			alignment_tensor = self._session_dictionary["attentions"]
-			eval_predictions, eval_alignments = session.run([prediction_tensor, alignment_tensor], feed_dict={input_pl:list(eval_inputs)})
+			eval_predictions, eval_alignments = [], []
+			for eval_batch in batched_eval_inputs:
+				eval_preds, eval_aligns = session.run([prediction_tensor, alignment_tensor], feed_dict={input_pl:eval_batch})
+				eval_predictions.extend(eval_preds)
+				eval_alignments.extend(eval_aligns)
 			return list(zip(eval_inputs, eval_results, eval_predictions, eval_alignments))
 		else:
-			eval_predictions = session.run(prediction_tensor, feed_dict={input_pl:list(eval_inputs)})
+			eval_predictions = []
+			for eval_batch in batched_eval_inputs:
+				eval_preds = session.run(prediction_tensor, feed_dict={input_pl:eval_batch})
+				eval_predictions.extend(eval_preds)
+			#eval_predictions = session.run(prediction_tensor, feed_dict={input_pl:list(eval_inputs)})
 			return zip(eval_inputs, eval_results, eval_predictions)
 
 	def _showResult(self, bundled_data_and_scores, per_line_func=None, end_func=None):
@@ -348,22 +474,23 @@ class SentimentRNNAttention(SentimentModel):
 		# show the heatmap as well
 		return end_func(total_case, correct_pos_count, correct_rat_count, total_deviation)
 	
-	def exportSession(self, export_sub_folder=0):
+	def exportSession(self, export_sub_folder=0, override=False):
 		"""Export the session for the tensorflow serving
 			Args:
 				export_sub_folder: the name of the subfolder where the exported model will be kept
 		"""
+		print("Using normal exportSession")
 		session = self._session_dictionary["session"]
 		input_pl, _, _ = self._session_dictionary["placeholders"]
 		predictions = self._session_dictionary["predictions"]
-		self._export_session(session, {"input": input_pl}, {"output": predictions}, export_sub_folder=export_sub_folder)
+		self._export_session(session, {"input": input_pl}, {"output": predictions}, export_sub_folder=export_sub_folder, override=override)
 
 class SentimentRNNAttentionExtended(SentimentRNNAttention):
 	def __init__(self, *args, **kwargs):
 		"""Add _certainty_loss value"""
+		self._certainty_loss = kwargs.pop("use_certainty_loss", False)
 		super(SentimentRNNAttentionExtended, self).__init__(*args, **kwargs)
-		self._certainty_loss = False
-	
+
 	def _buildTrainingInputSection(self):
 		"""Override the _buildTrainingInputSection from parent
 			Instead of one placeholder [batch_size] of int, we have [batch_size, 2] of float
@@ -392,10 +519,13 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		predictions_intensity, intensity_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="intensity")
 		predictions_positivity, positivity_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="positivity")
 		predictions_certainty, certainty_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="certainty")
+		predictions_intensity = tf.nn.sigmoid(predictions_intensity)
+		predictions_positivity = tf.nn.sigmoid(predictions_positivity)
 		# sigmoid to 0-1, and turn into a rating
-		predictions_intensity_rating = tf.cast(tf.round(2.0 * tf.nn.sigmoid(predictions_intensity)), tf.int32) # (scale 0-2)
-		predictions_positivity_rating = tf.cast(tf.round(tf.nn.sigmoid(predictions_positivity)), tf.int32) * 2 - 1 # (scale -1/1)
+		predictions_intensity_rating = tf.cast(tf.round(2.0 * predictions_intensity), tf.int32) # (scale 0-2)
+		predictions_positivity_rating = tf.cast(tf.round(predictions_positivity), tf.int32) * 2 - 1 # (scale -1/1)
 		predictions_rating = tf.identity(3 + predictions_intensity_rating * predictions_positivity_rating, name="predictions")
+		predictions_raw = tf.identity(0.5 + (tf.round(predictions_positivity) - 0.5) * predictions_intensity, name="raw")
 		predictions_certainty = tf.nn.sigmoid(predictions_certainty, name="pred_certainty")
 		# attention joined together
 		attention = tf.concat([tf.transpose(item, perm=[0, 2, 1]) for item in (intensity_attention, positivity_attention, certainty_attention)], axis=1)
@@ -406,21 +536,25 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		blank_mask = tf.cast(tf.fill(tf.shape(result_score), 0), dtype=entropy_positivity_unmasked.dtype)
 		entropy_positivity = tf.where(result_score == 3, blank_mask, entropy_positivity_unmasked)
 		entropy_certainty = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_certainty, logits=predictions_certainty)
-		
-		return (predictions_rating, predictions_certainty), attention, (entropy_intensity, entropy_certainty, entropy_positivity)
+		# return the values as in desc
+		return (predictions_raw, predictions_rating, predictions_certainty), attention, (entropy_intensity, entropy_certainty, entropy_positivity)
 
-	def _createTrainingOp(self, entropy, optimizer, learning_rate, certainty_value=None):
+	def _createTrainingOp(self, entropy, optimizer, learning_rate, certainty_value=None, result_score=None):
 		"""Override the _createTrainingOp of parent
 			entropy is a tuple of three, trying to minimize it
 			we can either sum it or penalize those with low certainty and wrong. this mode will be self._certainty_loss
+			Extra Args:
+				certainty_value: the value of predicted certainty by the model. [batch_size]
+				result_score: the value of the scores fed during training. [batch_size]
 		"""
 		entropy_positivity, entropy_intensity, entropy_certainty = entropy
 		entropy = entropy_positivity + entropy_intensity + entropy_certainty
 		if(self._certainty_loss):
+			print("Use certainty loss")
 			assert certainty_value, "_certainty_loss mode must have certainty_value"
 			entropy_hybrid = (entropy_positivity + entropy_intensity) * certainty_value
 			entropy = entropy + entropy_hybrid
-		return super(SentimentRNNAttentionExtended, self)._createTrainingOp(entropy, optimizer, learning_rate)
+		return super(SentimentRNNAttentionExtended, self)._createTrainingOp(entropy, optimizer, learning_rate, result_score=result_score)
 
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD", learning_rate=1.0):
 		"""An extended version from the buildSessionBidirectionalAttention, but instead of 1 there is now 3 prediction values: positivity, intensity and certainty, basing on the data of the comment.
@@ -441,7 +575,6 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 						intensity: comment's strength (neutral/intense)
 						certainty: how sure the session is of the prediction, use to guess comment_sure
 		"""
-		debug = self._debug
 		# initialize the session
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth = gpu_allow_growth
@@ -462,15 +595,16 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		result_placeholder, result_score, result_certainty = self._buildTrainingInputSection()
 		result_tuple = (result_score, result_certainty)
 		# build the prediction section
-		(predictions_rating, predictions_certainty), attention, entropy = self._buildPredictionSection(outputs, input_length, cell_size*2, result_tuple)
+		(predictions_raw, predictions_rating, predictions_certainty), attention, entropy = self._buildPredictionSection(outputs, input_length, cell_size*2, result_tuple)
 		# create train_op
-		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, certainty_value=predictions_certainty)
+		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, certainty_value=predictions_certainty, result_score=result_score)
 		# initialize
 		self._session_dictionary = {
 			"session": session, 
 			"placeholders": (input_placeholder, result_placeholder, dropout_placeholder), 
 			"training_ops":(loss, train_op), 
 			"predictions": predictions_rating,
+			"predictions_raw": predictions_raw,
 			"predictions_certainty": predictions_certainty,
 			"attentions": attention
 		}
@@ -482,7 +616,6 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		session = session_dictionary["session"]
 		input_pl, result_pl, dropout_pl = session_dictionary["placeholders"]
 		loss_t, train_op = trainers = session_dictionary["training_ops"] 
-		predictions = session_dictionary["predictions"]
 		training_dropout = dropout
 		timer = time.time()
 		# bundle the score and the abs reliability rating together
@@ -511,6 +644,14 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		dataset = [(line, score) for line, score, rel_rating in dataset]
 		return super(SentimentRNNAttentionExtended, self)._scoreDataset(dataset, **kwargs)
 
+	def exportSession(self, export_sub_folder=0, override=False):
+		print("Using export Attention Extended")
+		session = self._session_dictionary["session"]
+		input_pl, _, _ = self._session_dictionary["placeholders"]
+		predictions = self._session_dictionary["predictions"]
+		predictions_raw = self._session_dictionary["predictions_raw"]
+		self._export_session(session, {"input": input_pl}, {"output": predictions_raw, "output_rating": predictions}, export_sub_folder=export_sub_folder, override=override)
+
 class SentimentRNNAttentionMultimodal(SentimentRNNAttentionExtended):
 	def __init__(self, *args, **kwargs):
 		super(SentimentRNNAttentionMultimodal, self).__init__(*args, **kwargs)
@@ -534,13 +675,12 @@ class SentimentRNNAttentionMultimodal(SentimentRNNAttentionExtended):
 					predictions: a float tensor of [batch_size, num_class denoting the possibility of each]
 		"""
 		raise NotImplementedError("Unfinished refactoring")
-		debug = self._debug
 		# initialize the session
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth = gpu_allow_growth
 		session = tf.Session(config=config)
 		# anchor the embedding as constants
-		table_words = self._buildLookupTable(table_words, table_vectors, trainable_words=additional_words, default_word_idx=table_default_idx)
+		word_table, embeddings_tensor = self._buildLookupTable(table_words, table_vectors, trainable_words=additional_words, default_word_idx=table_default_idx)
 		input_placeholder, input_tokenized_dense, input_length = self._buildInputSection()
 		# lookup the ids by the table
 		input_indices = word_table.lookup(input_tokenized_dense, name="ids_input")
@@ -595,12 +735,6 @@ class SentimentRNNAttentionMultimodal(SentimentRNNAttentionExtended):
 			self._session_dictionary["predictions"] = (tf.cast(self._session_dictionary["predictions"], dtype=tf.float32) - 1.45) / 4.0
 			self._first_eval = False
 		return SentimentRNNAttention.evalSession(self, dataset, detailed=detailed)
-
-	def exportSession(self, export_sub_folder=0):
-		session = self._session_dictionary["session"]
-		input_pl, _, _ = self._session_dictionary["placeholders"]
-		predictions = self._session_dictionary["predictions"]
-		self._export_session(session, {"input": input_pl}, {"output_rating": predictions}, export_sub_folder=export_sub_folder)
 
 class SentimentRNNBalanceModel(SentimentRNNAttention):
 	def _buildPredictionSection(self, outputs, input_length, cell_size, result_sigmoid):

@@ -1,6 +1,5 @@
 import sys, re, argparse, io, time, os
 import itertools
-import pprint
 
 def prettyPrintDict(header, target, stream=sys.stdout, width=80):
 	stream.write("{ ")
