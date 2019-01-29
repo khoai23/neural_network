@@ -548,12 +548,14 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 				result_score: the value of the scores fed during training. [batch_size]
 		"""
 		entropy_positivity, entropy_intensity, entropy_certainty = entropy
-		entropy = entropy_positivity + entropy_intensity + entropy_certainty
+		entropy = entropy_positivity + entropy_intensity
 		if(self._certainty_loss):
 			print("Use certainty loss")
-			assert certainty_value, "_certainty_loss mode must have certainty_value"
-			entropy_hybrid = (entropy_positivity + entropy_intensity) * certainty_value
-			entropy = entropy + entropy_hybrid
+			assert certainty_value is not None, "_certainty_loss mode must have certainty_value"
+			# balance point at around 0.69, increase entropy exponentially
+			entropy = tf.exp(entropy - 2 * 0.5) * (1.0 - certainty_value * 0.5)
+		else:
+			entropy = entropy + entropy_certainty
 		return super(SentimentRNNAttentionExtended, self)._createTrainingOp(entropy, optimizer, learning_rate, result_score=result_score)
 
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD", learning_rate=1.0):

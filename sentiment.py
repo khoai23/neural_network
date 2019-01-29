@@ -175,7 +175,8 @@ def createModel(args, dataset):
 		model = model_lib.SentimentRNNAttention(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
 		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
 	elif(args.model_structure == "attention_extended"):
-		model = model_lib.SentimentRNNAttentionExtended(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
+		args.use_certainty = False
+		model = model_lib.SentimentRNNAttentionExtended(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss, use_certainty_loss=args.use_certainty)
 		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
 	elif(args.model_structure == "attention_multimodal"):
 		model = model_lib.SentimentRNNAttentionMultimodal(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)

@@ -27,7 +27,7 @@ def optimizeLossClean(train_logits, correct_ids, correct_output_length, optimize
 		global_step = tf.train.get_or_create_global_step()
 		return train_loss, token_loss, tf.contrib.layers.optimize_loss(train_loss, global_step, learning_rate, optimizer, learning_rate_decay_fn=decay_fn, clip_gradients=clip_gradients, name="backprop_op")
 
-def getOrCreateEmbedding(name, create=False, vocab_size=None, num_units=None):
+def getOrCreateEmbedding(name, create=False, vocab_size=None, num_units=None, scope="embeddings"):
 	"""Get or create an embedding function converting ids to embedding
 		Args:
 			name: the name of the embedding
@@ -36,7 +36,7 @@ def getOrCreateEmbedding(name, create=False, vocab_size=None, num_units=None):
 		Returns:
 			A lookup callable converting ids to embedding
 	"""
-	with tf.variable_scope("embeddings", reuse=not create):
+	with tf.variable_scope(scope, reuse=not create):
 		embedding = tf.get_variable(name, shape=[vocab_size, num_units] if create else None, initializer=tf.random_uniform_initializer(minval=-0.1, maxval=0.1))
 	return lambda x: tf.nn.embedding_lookup(embedding, x)
 
@@ -51,6 +51,7 @@ def createEncoderClean(embedded_inputs, cell_size=512, cell_type=tf.nn.rnn_cell.
 	"""
 	printer("Constructing encoder with setting values: {}".format(locals()))
 	with tf.variable_scope(name):
+		print("Current namescope {:s}".format(tf.get_variable_scope().name))
 		# Check for dropout, create a placeholder if not yet created
 		dropout = created_dropout
 		if(not isinstance(dropout, tf.Tensor)):
@@ -80,16 +81,17 @@ def createEncoderClean(embedded_inputs, cell_size=512, cell_type=tf.nn.rnn_cell.
 		else:
 			cell = createRNNCell(cell_type, cell_size, num_layers, dropout=dropout, name='encoder_cell')
 			
-			outputs, state = tf.nn.dynamic_rnn(cell, inputs, dtype=tf.float32)
+			outputs, state = tf.nn.dynamic_rnn(cell, embedded_inputs, dtype=tf.float32)
 		return outputs, state
 
-def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=None, projection_layer=None, encoder_outputs=None, encoder_length=None, cell_size=512, cell_type=tf.nn.rnn_cell.BasicLSTMCell, num_layers=2, created_dropout=None, attention_mechanism=None, printer=_default_printer, name='decoder', variable_scope_reuse=False, beam_size=1, training=False, end_token=None, maximum_iterations=250):
+def createDecoderClean(inputs, encoder_state, vocab_size, inputs_length=None, embedding_fn=None, projection_layer=None, encoder_outputs=None, encoder_length=None, cell_size=512, cell_type=tf.nn.rnn_cell.BasicLSTMCell, num_layers=2, created_dropout=None, attention_mechanism=None, printer=_default_printer, name='decoder', variable_scope_reuse=False, beam_size=1, training=False, end_token=None, maximum_iterations=250):
 	"""Create a decoder with or without attention and beam
 		If using attention, encoder_outputs and encoder_length required as tensor [batch_size, src_len, embedding_size] and [batch_size]
 		If want to train|eval, set training=True and inputs is the correct inputs of the whole sentence; inputs_length required
 		If want to infer, set training=False and inputs is the starting [batch_size] of start_token; embedding_fn, beam_size, end_token required
 	Args: 
-			projection_layer: Required in all, convert cell output to probs
+#DEP	projection_layer: Required in all, convert cell output to probs
+			vocab_size: Required, the size of the projection. Replace to be self-contained
 			inputs: see above
 			variable_scope_reuse: set if this function had ran before
 			training: set if in training mode
@@ -106,9 +108,9 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 		assert inputs_length is not None, "Must have inputs_length in training"
 
 	with tf.variable_scope(name, reuse=variable_scope_reuse):
-		print("Overriding a projection layer inside namescope. Damn")
+		printer("Current namescope {:s}".format(tf.get_variable_scope().name))
 	# with tf.variable_scope("projection", reuse=tf.AUTO_REUSE):
-		projection_layer = tf.layers.Dense(len(tgt_vocab), use_bias=False, name="decoder_projection_layer")
+		projection_layer = tf.layers.Dense(vocab_size, use_bias=False, name="decoder_projection_layer")
 		# construct cell
 		cell = createRNNCell(cell_type, cell_size, num_layers, dropout=created_dropout, name='rnn_cell')
 		if(attention_mechanism):
@@ -132,12 +134,12 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 		if(training):
 			# Training decoder
 			helper = tf.contrib.seq2seq.TrainingHelper(inputs, inputs_length)
-			decoder = tf.contrib.seq2seq.BasicDecoder(cell, helper, initial_state)
+			decoder = tf.contrib.seq2seq.BasicDecoder(cell, helper, initial_state, output_layer=projection_layer)
 			# run the dynamic decode
 			outputs, final_state, final_length = tf.contrib.seq2seq.dynamic_decode(decoder)
-			unprojected_logits = outputs.rnn_output
+			logits = outputs.rnn_output
 			return { 
-				"logits": projection_layer(unprojected_logits), 
+				"logits": logits, 
 				"state": final_state, 
 				"length": final_length 
 			}
@@ -151,7 +153,7 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 			predictions = outputs.sample_id
 			alignment_history = final_state.alignment_history if attention_mechanism else None
 			return {
-				"predictions": tf.expand_dims(predictions, -1),
+				"predictions": tf.expand_dims(predictions, 1),
 				"state": final_state,
 				"length": tf.expand_dims(final_length, -1),
 				"log_probs": final_state,
@@ -159,19 +161,20 @@ def createDecoderClean(inputs, encoder_state, inputs_length=None, embedding_fn=N
 			}
 		else:
 			# tile the inputs and run the BeamSearchDecoder
-			start_tokens = tf.contrib.seq2seq.tile_batch(inputs, multiplier=beam_size)
-			start_tokens = tf.Print(start_tokens, [tf.shape(start_tokens), tf.shape(encoder_state), tf.shape(encoder_outputs), tf.shape(encoder_length)])
+			start_tokens = inputs
+#			start_tokens = tf.Print(start_tokens, [tf.shape(start_tokens), tf.shape(encoder_state), tf.shape(encoder_outputs), tf.shape(encoder_length)])
 			decoder = tf.contrib.seq2seq.BeamSearchDecoder(cell, embedding_fn, start_tokens, end_token, initial_state, beam_size, output_layer=projection_layer)
 			outputs, final_state, final_length = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
 			# get the necessary values
 			predictions = outputs.predicted_ids
-			print("Alignment history not available currently")
 #			alignment_history = final_state.alignment_history if attention_mechanism else Nonea
 			alignment_history = None
 			if(alignment_history):
 				batch_size = tf.shape(inputs)[0]
 				src_len = tf.shape(encoder_outputs)[1]
 				alignment_history = tf.reshape(alignment_history, [batch_size, beam_size, -1, src_len])
+			else:
+				printer("Alignment history not available currently")
 			return {
 				"predictions": tf.transpose(predictions, perm=[0, 2, 1]),
 				"state": final_state,

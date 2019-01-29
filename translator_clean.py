@@ -1,5 +1,5 @@
 import numpy as np
-import sys, io, os, pickle, time, random
+import io, os, pickle, time, random
 import ffBuilder as builder
 import translator as legacy
 import tensorflow as tf
@@ -119,7 +119,7 @@ def createSession(args):
 		decoder_inputs_ids = tf.concat([training_tgt_front_pad, tgt_inputs_placeholder], axis=1)[:, :-1]
 		decoder_inputs = tgt_embedding_fn(decoder_inputs_ids)
 		# run decoder, get logits
-		decoder_result = builder.createDecoderClean(decoder_inputs, encoder_state, inputs_length=tgt_inputs_length_placeholder, 
+		decoder_result = builder.createDecoderClean(decoder_inputs, encoder_state, len(tgt_vocab), inputs_length=tgt_inputs_length_placeholder, 
 				attention_mechanism=tf.contrib.seq2seq.LuongAttention, encoder_outputs=encoder_outputs, encoder_length=src_inputs_length_placeholder,
 				created_dropout=dropout_placeholder, training=True, cell_size=args.num_units)
 		# create train_op
@@ -139,7 +139,7 @@ def createSession(args):
 		start_tokens = tf.fill([batch_size], start_token_idx)
 		end_token_idx = tgt_word_to_id[end_token]
 		# run decoder, get ids/state/attention bundled in dict
-		decoder_result = builder.createDecoderClean(start_tokens, encoder_state, embedding_fn=tgt_embedding_fn, end_token=end_token_idx, 
+		decoder_result = builder.createDecoderClean(start_tokens, encoder_state, len(tgt_vocab), embedding_fn=tgt_embedding_fn, end_token=end_token_idx, 
 				attention_mechanism=tf.contrib.seq2seq.LuongAttention, encoder_outputs=encoder_outputs, encoder_length=src_inputs_length_placeholder, 
 				training=False, cell_size=args.num_units, beam_size=args.beam_size)
 		result = {
@@ -157,8 +157,9 @@ def createSession(args):
 	config.gpu_options.allow_growth = not args.gpu_disable_allow_growth
 	session = tf.Session(config=config)
 	session.run(tf.global_variables_initializer())
+#	print([t.name for t in tf.trainable_variables()])
 	# check for saved values
-	builder.loadFromPath(session, args.save_path)
+	builder.loadFromPath(session, args.save_path, debug=True)
 	
 	result["session"] = session
 	result["src_word_to_id"] = src_word_to_id
@@ -194,19 +195,19 @@ def getGlobalStep(session):
 if __name__ == "__main__":
 	# Fix later
 	parser = argparse.ArgumentParser(description='Run RNN.')
-	args = parser.parse_args([])
-	args.mode = "infer"
-	args.run_dir = sys.argv[1] #/home/quan/Workspace/Data/iwslt15
-	args.file_name = "train"
+	parser.add_argument('-m', '--mode', choices=["train", "infer", "eval", "export"], help="Mode of the program")
+	args = parser.parse_args()
+	args.run_dir = "/home/quan/Workspace/Data/iwslt15"
+	args.file_name = "tst2012"
 	args.src = "en"
 	args.tgt = "vi"
 	args.num_units = 512
 	args.batch_size = 128
-	args.beam_size = 1
+	args.beam_size = 10
 	args.gpu_disable_allow_growth = False
-	args.save_path = "./run_trash.sav"
-	args.manual_load_train_data = True
-	args.epoch = 10
+	args.save_path = "./data/run_trash.sav"
+	args.manual_load_train_data = False
+	args.epoch = 9
 	args.dropout = 0.8
 
 	
@@ -228,6 +229,7 @@ if __name__ == "__main__":
 				batched_dataset, _ = processData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file=tgt_file, filter_fn=filter_fn)
 				pickle.dump(batched_dataset, dump_file)
 		else:
+			print("Load processed data...")
 			with io.open(dump_file, "rb") as dump_file:
 				batched_dataset = pickle.load(dump_file)
 		# print(batched_dataset)
@@ -248,24 +250,30 @@ if __name__ == "__main__":
 	elif(args.mode == "infer"):
 		# read data and batch them together
 		print("Create data for inference...")
-		src_file = os.path.join(args.run_dir, "infer." + args.src)
+		src_file = os.path.join(args.run_dir, args.file_name + "." + args.src)
 		batched_dataset, indices = processData(args, src_word_to_id, tgt_word_to_id, src_file, tgt_file=None)
 		all_predictions, all_predictions_length = [], []
 		# run infer on batched data
 		timer = time.time()
-		print("Start inference process")
+		print("Start inference process, with dataset size {:d} of {:d} sentences each".format(len(batched_dataset), args.batch_size))
 		for batch in batched_dataset:
 			batch_predictions, batch_predictions_length = inferSession(session_data, batch)
 			all_predictions.extend(batch_predictions)
 			all_predictions_length.extend(batch_predictions_length)
 		print("Inference finished, time passed {:.2f}s".format(time.time() - timer))
+#		print("First sample: {} - {}".format(all_predictions[0], all_predictions_length[0]))
 		# reorder and trim sentences
 		timer = time.time()
 		tgt_id_to_word = {v:k for k, v in tgt_word_to_id.items() }
 		word_lookup_fn = lambda idx: tgt_id_to_word.get(idx, unk_token)
 		zip_length_predictions = zip(all_predictions, all_predictions_length)
 		# trim
-		all_predictions = ( pred[:pred_length] for pred, pred_length in zip_length_predictions )
+		# because of beam format, it is [batch_size, beam_width, tgt_len] for sentences and [batch_size, beam_width] for sentences_length
+		# format to [batch_size, beam_width, correct_length]
+		beam_handler = lambda predictions, prediction_lengths: [ pred[:pred_length] for pred, pred_length in zip(predictions, prediction_lengths) ]
+		all_predictions = ( beam_handler(preds, pred_lengths) for preds, pred_lengths in zip_length_predictions )
+		# take the first beam
+		all_predictions = ( batch[0] for batch in all_predictions)
 		# reverse lookup and join
 		all_predictions = ( " ".join([word_lookup_fn(word_idx) for word_idx in pred]) for pred in all_predictions )
 		# sort to correct order
