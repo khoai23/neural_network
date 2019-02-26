@@ -3,12 +3,13 @@ import html
 
 NUMBER_RANGE = 3
 DEFAULT_SENTENCE_LENGTH = 50
+COUNTER_PRINT = 1000
 
 # refer to https://stackoverflow.com/questions/37579692/unicode-range-for-vietnamese
 # and http://kipalog.1upnote.me/post/KTfPN3Gkv43ykRQ1aRd5_w
 
 # all_vietnamese_characters_no_tone_marks = u"aAăĂâÂbBcCdDđĐeEêÊfFgGhHiIjJkKlLmMnNoOôÔơƠpPqQrRsStTuUưƯvVwWxXyYzZ"
-all_vietnamese_characters = u"aAàÀảẢãÃáÁạẠăĂằẰẳẲẵẴắẮặẶâÂầẦẩẨẫẪấẤậẬbBcCdDđĐeEèÈẻẺẽẼéÉẹẸêÊềỀểỂễỄếẾệỆfFgGhHiIìÌỉỈĩĨíÍịỊjJkKlLmMnNoOòÒỏỎõÕóÓọỌôÔồỒổỔỗỖốỐộỘơƠờỜởỞỡỠớỚợỢpPqQrRsStTuUùÙủỦũŨúÚụỤưƯừỪửỬữỮứỨựỰvVwWxXyYỳỲỷỶỹỸýÝỵỴzZ"
+all_vietnamese_characters = "aAàÀảẢãÃáÁạẠăĂằẰẳẲẵẴắẮặẶâÂầẦẩẨẫẪấẤậẬbBcCdDđĐeEèÈẻẺẽẼéÉẹẸêÊềỀểỂễỄếẾệỆfFgGhHiIìÌỉỈĩĨíÍịỊjJkKlLmMnNoOòÒỏỎõÕóÓọỌôÔồỒổỔỗỖốỐộỘơƠờỜởỞỡỠớỚợỢpPqQrRsStTuUùÙủỦũŨúÚụỤưƯừỪửỬữỮứỨựỰvVwWxXyYỳỲỷỶỹỸýÝỵỴzZ"
 all_vowels_no_diacritics = "AaEeIiOoUu"
 all_diacritics_vowels_no_tone_marks="ÂâĂăƠơƯưÊê"
 all_vowels_no_tone_marks = all_vowels_no_diacritics + all_diacritics_vowels_no_tone_marks
@@ -29,7 +30,7 @@ def generate_tranform_dict():
   add_tilde = "AaEeIiOoUuÂâĂăƠơƯưÊêÔôy","ÃãẼẽĨĩÕõŨũẪẫẴẵỠỡỮữỄễỖỗỹ", "\u0303"
   add_under_dot = "AaEeIiOoUuÂâĂăƠơƯưÊêÔôy","ẠạẸẹỊịỌọỤụẬậẶặỢợỰựỆệỘộỵ", "\u0323"
   add_above_hook = "AaEeIiOoUuÂâĂăƠơƯưÊêÔôy","ẢảẺẻỈỉỎỏỦủẨẩẲẳỞởỬửỂểỔổỷ", "\u0309"
-  print(locals())
+#  print(locals())
   convert_dict = {}
   for name, item in locals().items():
     if(not isinstance(item, tuple) or len(item) != 3):
@@ -57,7 +58,7 @@ def vietnamese_ghost_characters_cleaner(line, ghost_checker, convert_dict, ghost
       if char in ghost_checker:
 #        print("Char [ {:s}]({}-{:d}) is ghost".format(char, char.encode(), idx))
         # some article have space before the diacritics, which should be removed 
-        if(new_line[-1] == ' '):
+        if(len(new_line) > 0 and new_line[-1] == ' '):
           print("Caught space for diacritic  {:s}, removing.".format(char))
           new_line = new_line[:-1]
         prev_char = new_line[-1] if idx > 0 else ""
@@ -210,6 +211,12 @@ def splice_long_sentences(tokens, threshold=50, overlap=10):
     # splicing basing on the overlap
     num_split = (len(tokens) - threshold) // overlap + 1
     return [tokens[starter*10:starter*10+threshold] for starter in range(num_split)]
+
+REFORMATTER = ( ("-RRB", ")"), ("-LRB-", ")"), ("``", "\""), ("\'\'", "\""))
+def misc_reformat(line):
+	for src, tgt in REFORMATTER:
+		line = line.replace(src, tgt)
+	return line
 
 if __name__ == "__main__":
   mode = sys.argv[1]

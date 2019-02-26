@@ -21,6 +21,9 @@ class SentimentModel:
 	def exportSession(self):
 		raise NotImplementedError("Base model, no session")
 
+	def tune(self, dataset):
+		raise NotImplementedError("Tuning not implemented")
+
 	def saveSession(self, compare_func, model_idx=None):
 		if(not compare_func):
 			compare_func = self._default_compare_function
@@ -141,6 +144,10 @@ class SentimentModel:
 		global_step = tf.train.get_or_create_global_step()
 		return tf.contrib.layers.optimize_loss(loss, global_step, learning_rate, optimizer, clip_gradients=5.0, name="train_op"), loss
 
+
+
+
+
 class SentimentCNNPooledModel(SentimentModel):
 	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):
 		self._save_path = save_path
@@ -184,7 +191,7 @@ class SentimentCNNPooledModel(SentimentModel):
 
 		# compute loss from predictions to true (result)
 		predictions = tf.nn.sigmoid(predictions_raw, name="prediction_sigmoid")
-		prediction_rating = tf.cast(1.5 + predictions * 4.0, dtype=tf.int32, name="predictions")
+		predictions_rating = tf.cast(1.5 + predictions * 4.0, dtype=tf.int32, name="predictions")
 		# create train_op
 		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, result_score=result_placeholder)
 		# initialize
@@ -193,7 +200,7 @@ class SentimentCNNPooledModel(SentimentModel):
 			"placeholders": (input_placeholder, result_placeholder, dropout_placeholder), 
 			"training_ops":(loss, train_op), 
 			"predictions_raw": predictions,
-			"predictions": prediction_rating
+			"predictions": predictions_rating
 		}
 		return self._session_dictionary
 
@@ -231,6 +238,11 @@ class SentimentCNNPooledModel(SentimentModel):
 		predictions_attention = tf.transpose(predictions_attention, perm=[0, 2, 1])
 		return predictions_raw, predictions_attention, entropy
 
+
+
+
+
+
 class SentimentRNNAttention(SentimentModel):
 	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):
 		if(loss_weight is not None):
@@ -255,18 +267,14 @@ class SentimentRNNAttention(SentimentModel):
 		"""
 		# the weight are inversely proportional to its percentage to the sum, thus it is sum / occ
 		sum_loss_weight = sum(self._loss_weight)
-		weighted_loss = tf.constant([sum_loss_weight / occurence for occurence in self._loss_weight], name="weighted_loss")
-		# tile the losses to [5, batch_size]
-		batch_size = tf.shape(result_tensor)[0]
-#		tiled_weights = tf.tile(tf.expand_dims(weighted_loss, axis=0), [batch_size, 1])
-#		flattened_weights = tf.reshape(tiled_weights, [-1])
-		# nvm, can tile it from the start
-		flattened_weights = tf.tile(weighted_loss, [batch_size])
+		wl = [sum_loss_weight / occurence for occurence in self._loss_weight]
+#		print("Use weight = {}".format(wl))
+		weighted_loss = tf.constant(wl, name="weighted_loss")
 		# create the selector
 		# need a -1 since it ran from 1-5 while we want selector in range 0-4 per bracket
-		selector = result_tensor + tf.range(batch_size, dtype=result_tensor.dtype) * 5 - 1
+		selector = result_tensor - 1
 		# select
-		loss_weights = tf.gather(flattened_weights, selector, name="loss_weights")
+		loss_weights = tf.gather(weighted_loss, selector, name="loss_weights")
 		return loss_weights
 
 	def _buildPredictionSection(self, rnn_output, rnn_length, rnn_size, result_sigmoid):
@@ -322,7 +330,7 @@ class SentimentRNNAttention(SentimentModel):
 		predictions_raw, attention, entropy = self._buildPredictionSection(outputs, input_length, cell_size*2, result_sigmoid)
 		# compute loss from predictions to true (result)
 		predictions = tf.nn.sigmoid(predictions_raw, name="prediction_sigmoid")
-		prediction_rating = tf.cast(1.5 + predictions * 4.0, dtype=tf.int32, name="predictions")
+		predictions_rating = tf.cast(1.5 + predictions * 4.0, dtype=tf.int32, name="predictions")
 		# create train_op
 		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, result_score=result_placeholder)
 		# initialize
@@ -331,7 +339,7 @@ class SentimentRNNAttention(SentimentModel):
 			"placeholders": (input_placeholder, result_placeholder, dropout_placeholder), 
 			"training_ops":(loss, train_op), 
 			"predictions_raw": predictions,
-			"predictions": prediction_rating,
+			"predictions": predictions_rating,
 			"attentions": attention
 		}
 		return self._session_dictionary
@@ -372,16 +380,17 @@ class SentimentRNNAttention(SentimentModel):
 			self._prev_stat = self.saveSession(self._default_compare_function, model_idx=(i+1))
 		print("All training phase completed, time passed {:.2f}".format(time.time()-timer))
 	
-	def evalSession(self, eval_dataset, detailed=False, alignment_sample=False, alignment_file_path=None):
+	def evalSession(self, eval_dataset, detailed=False, alignment_sample=False, alignment_file_path=None, external_fn=None):
 		"""Evaluate the session on the eval_dataset
 			Args:
 				eval_dataset: the iterable containing (line, score) both in raw format (str)
 				detailed: if true, print the trace of every line
 				alignment_sample: if True, evaluate the result and print out the best and worst sample. Currently set to 10 samples each
+				external_fn: a callable that will change the ratings. Use to implement dictionary
 			Returns:
 				a tuple of correct_score, correct_positivity, and negative mean_difference to help during saveSession if not in alignment mode
 		"""
-		scored_dataset = self._scoreDataset(eval_dataset, alignment_sample=alignment_sample)
+		scored_dataset = self._scoreDataset(eval_dataset, alignment_sample=alignment_sample, external_fn=external_fn)
 		if(not alignment_sample):
 			def print_line(sentence, correct_rating, pred_rating):
 				if(detailed):
@@ -426,11 +435,12 @@ class SentimentRNNAttention(SentimentModel):
 				createHeatmapImage(worst_file, worst_sentences, worst_alignments, worst_score, image_title="Worst Result", attention_names=self._attention_names)
 			print("Exported worst results to {}".format(worst_file_path))
 
-	def _scoreDataset(self, dataset, alignment_sample=False):
+	def _scoreDataset(self, dataset, alignment_sample=False, external_fn=None):
 		"""Evaluate the session on the eval_dataset
 			Args:
 				eval_dataset: the iterable containing (line, score) both in raw format (str)
 				alignment_sample: if True, append alignments data
+				external_fn: an external function to change the predictions
 			Returns:
 				tupled and iterable data containing prediction score
 		"""
@@ -445,16 +455,25 @@ class SentimentRNNAttention(SentimentModel):
 			alignment_tensor = self._session_dictionary["attentions"]
 			eval_predictions, eval_alignments = [], []
 			for eval_batch in batched_eval_inputs:
+				# eval for each batch with alignments
 				eval_preds, eval_aligns = session.run([prediction_tensor, alignment_tensor], feed_dict={input_pl:eval_batch})
 				eval_predictions.extend(eval_preds)
 				eval_alignments.extend(eval_aligns)
+			if(external_fn and callable(external_fn)):
+				# run rectifier if exist
+				print("Using internal rectifiers")
+				eval_inputs, eval_predictions = external_fn(eval_inputs, eval_predictions)
 			return list(zip(eval_inputs, eval_results, eval_predictions, eval_alignments))
 		else:
 			eval_predictions = []
 			for eval_batch in batched_eval_inputs:
+				# eval for each batch without alignments
 				eval_preds = session.run(prediction_tensor, feed_dict={input_pl:eval_batch})
 				eval_predictions.extend(eval_preds)
-			#eval_predictions = session.run(prediction_tensor, feed_dict={input_pl:list(eval_inputs)})
+			if(external_fn and callable(external_fn)):
+				print("Using internal rectifiers")
+				# run rectifier if exist
+				eval_inputs, eval_predictions = external_fn(eval_inputs, eval_predictions)
 			return zip(eval_inputs, eval_results, eval_predictions)
 
 	def _showResult(self, bundled_data_and_scores, per_line_func=None, end_func=None):
@@ -473,6 +492,41 @@ class SentimentRNNAttention(SentimentModel):
 				per_line_func(line, correct_rating, pred_rating)
 		# show the heatmap as well
 		return end_func(total_case, correct_pos_count, correct_rat_count, total_deviation)
+
+	def tune(self, dataset, weight_correction=False, debug=False):
+		"""Try to tune the session on this particular dataset
+			Args:
+				dataset: a dataset in form of list (sentence, rating)
+				weight_correction: if not modified, the correct value will move by the rarity
+				debug: if True, output certain informations
+		"""
+		# take all the placeholders
+		session = self._session_dictionary["session"]
+		input_pl, _, _ = self._session_dictionary["placeholders"]
+		tune_inputs, tune_results, *_ = zip(*dataset)
+		tune_results = [int(res) for res in tune_results]
+		predictions_raw = self._session_dictionary["predictions_raw"]
+		# batch and feed
+		batched_tune_inputs = batch(list(tune_inputs), n=self._batch_size, shuffle_batch=False)
+		tune_predictions = []
+		for tune_batch in batched_tune_inputs:
+			tune_preds = session.run(predictions_raw, feed_dict={input_pl:tune_batch})
+			tune_predictions.extend(tune_preds)
+		# reorders
+		tune_set = zip(tune_results, tune_predictions)
+		# tune all the separating values between 1-2-3-4-5
+		separators = []
+		for sep in range(1, 5):
+			evaluation_function = lambda val: val <= sep
+			sep_value = tuneValuesSet(tune_set, evaluation_function, weight_correction=weight_correction, debug=debug)
+			separators.append(sep_value)
+		# create the tuned version of the rating
+		predictions_tuned_rating = tf.convert_to_tensor(1, dtype=tf.int32, name="base")
+		for sep_idx, sep_value in enumerate(separators):
+			is_over_bracket = tf.greater(predictions_raw, tf.convert_to_tensor(sep_value, dtype=predictions_raw.dtype, name="brk{:d}-{:d}".format(sep_idx+1, sep_idx+2)))
+			predictions_tuned_rating = tf.identity(predictions_tuned_rating + tf.cast(is_over_bracket, dtype=tf.int32), name="tuned_part_{:d}".format(sep_idx))
+		# replace the untuned rating with the tuned one
+		self._session_dictionary["predictions"] = predictions_tuned_rating
 	
 	def exportSession(self, export_sub_folder=0, override=False):
 		"""Export the session for the tensorflow serving
@@ -484,6 +538,10 @@ class SentimentRNNAttention(SentimentModel):
 		input_pl, _, _ = self._session_dictionary["placeholders"]
 		predictions = self._session_dictionary["predictions"]
 		self._export_session(session, {"input": input_pl}, {"output": predictions}, export_sub_folder=export_sub_folder, override=override)
+
+
+
+
 
 class SentimentRNNAttentionExtended(SentimentRNNAttention):
 	def __init__(self, *args, **kwargs):
@@ -504,11 +562,11 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 
 	def _buildPredictionSection(self, rnn_output, rnn_length, rnn_size, result_tuple):
 		"""Override the _buildPredictionSection from parent
-			The result_sigmoid is actually a tuple of (result_score, result_certainty)
+			The result_tuple is actually a tuple of (result_score, result_certainty)
 			Thus, the entropy is also the tuple of (entropy_positivity, entropy_intensity, entropy_certainty)
 			Returns:
 				a tuple of
-					predictions: due to int/pos structure, a tuple of (prediction_rating, predictions_certainty) of [batch_size] each, int(1-5) and float(0-1) 
+					predictions: due to int/pos structure, a tuple of (predictions_raw, predictions_rating, predictions_sigmoids) of [batch_size] each, int(1-5) and float(0-1) 
 					attentions: the attentions for int/pos/cer, [batch_size, 3, length]
 					entropy: tuple of 3 above
 		"""
@@ -519,14 +577,14 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		predictions_intensity, intensity_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="intensity")
 		predictions_positivity, positivity_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="positivity")
 		predictions_certainty, certainty_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="certainty")
-		predictions_intensity = tf.nn.sigmoid(predictions_intensity)
-		predictions_positivity = tf.nn.sigmoid(predictions_positivity)
+		predictions_intensity_sig = tf.nn.sigmoid(predictions_intensity)
+		predictions_positivity_sig = tf.nn.sigmoid(predictions_positivity)
 		# sigmoid to 0-1, and turn into a rating
-		predictions_intensity_rating = tf.cast(tf.round(2.0 * predictions_intensity), tf.int32) # (scale 0-2)
-		predictions_positivity_rating = tf.cast(tf.round(predictions_positivity), tf.int32) * 2 - 1 # (scale -1/1)
+		predictions_intensity_rating = tf.cast(tf.round(2.0 * predictions_intensity_sig), tf.int32) # (scale 0-2)
+		predictions_positivity_rating = tf.cast(tf.round(predictions_positivity_sig), tf.int32) * 2 - 1 # (scale -1/1)
 		predictions_rating = tf.identity(3 + predictions_intensity_rating * predictions_positivity_rating, name="predictions")
-		predictions_raw = tf.identity(0.5 + (tf.round(predictions_positivity) - 0.5) * predictions_intensity, name="raw")
-		predictions_certainty = tf.nn.sigmoid(predictions_certainty, name="pred_certainty")
+		predictions_raw = tf.identity(0.5 + (tf.round(predictions_positivity_sig) - 0.5) * predictions_intensity_sig, name="raw")
+		predictions_certainty_sig = tf.nn.sigmoid(predictions_certainty, name="pred_certainty")
 		# attention joined together
 		attention = tf.concat([tf.transpose(item, perm=[0, 2, 1]) for item in (intensity_attention, positivity_attention, certainty_attention)], axis=1)
 		# the entropy
@@ -537,7 +595,8 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		entropy_positivity = tf.where(result_score == 3, blank_mask, entropy_positivity_unmasked)
 		entropy_certainty = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_certainty, logits=predictions_certainty)
 		# return the values as in desc
-		return (predictions_raw, predictions_rating, predictions_certainty), attention, (entropy_intensity, entropy_certainty, entropy_positivity)
+		predictions_sig = predictions_intensity_sig, predictions_positivity_sig, predictions_certainty_sig
+		return (predictions_raw, predictions_rating, predictions_sig), attention, (entropy_intensity, entropy_certainty, entropy_positivity)
 
 	def _createTrainingOp(self, entropy, optimizer, learning_rate, certainty_value=None, result_score=None):
 		"""Override the _createTrainingOp of parent
@@ -597,9 +656,9 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		result_placeholder, result_score, result_certainty = self._buildTrainingInputSection()
 		result_tuple = (result_score, result_certainty)
 		# build the prediction section
-		(predictions_raw, predictions_rating, predictions_certainty), attention, entropy = self._buildPredictionSection(outputs, input_length, cell_size*2, result_tuple)
+		(predictions_raw, predictions_rating, predictions_sigmoids), attention, entropy = self._buildPredictionSection(outputs, input_length, cell_size*2, result_tuple)
 		# create train_op
-		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, certainty_value=predictions_certainty, result_score=result_score)
+		train_op, loss = self._createTrainingOp(entropy, optimizer, learning_rate, certainty_value=predictions_sigmoids[-1], result_score=result_score)
 		# initialize
 		self._session_dictionary = {
 			"session": session, 
@@ -607,7 +666,7 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 			"training_ops":(loss, train_op), 
 			"predictions": predictions_rating,
 			"predictions_raw": predictions_raw,
-			"predictions_certainty": predictions_certainty,
+			"predictions_sigmoids": predictions_sigmoids,
 			"attentions": attention
 		}
 		self._attention_names = ["intensity", "positivity", "certainty"]
@@ -653,6 +712,126 @@ class SentimentRNNAttentionExtended(SentimentRNNAttention):
 		predictions = self._session_dictionary["predictions"]
 		predictions_raw = self._session_dictionary["predictions_raw"]
 		self._export_session(session, {"input": input_pl}, {"output": predictions_raw, "output_rating": predictions}, export_sub_folder=export_sub_folder, override=override)
+
+	def tune(self, dataset, weight_correction=False, debug=False):
+		"""
+			Override from the parent (SentimentRNNAttention) as well
+			require the sigmoid'd 3 predictions
+		"""
+		# take all the placeholders
+		session = self._session_dictionary["session"]
+		input_pl, _, _ = self._session_dictionary["placeholders"]
+		tune_inputs, tune_results, *_ = zip(*dataset)
+		tune_results = [int(res) for res in tune_results]
+		predictions_sigmoids = self._session_dictionary["predictions_sigmoids"]
+		# batch and feed
+		batched_tune_inputs = batch(list(tune_inputs), n=self._batch_size, shuffle_batch=False)
+		tune_predictions = []
+		for tune_batch in batched_tune_inputs:
+			tune_preds = session.run(predictions_sigmoids, feed_dict={input_pl:tune_batch})
+			tune_predictions.extend(zip(*tune_preds))
+		# tune the 2-4/1-5 difference through intensity, 1-2/4-5 difference through positivity and 3/1-2-4-5 through certainty
+		# split into bunches
+		intensity_preds, positivity_preds, certainty_preds = zip(*tune_predictions)
+		# intensity
+		intensity_tune_set = list(zip(tune_results, intensity_preds))
+		intensity_exist_fn = lambda val: val != 3
+		intensity_is_high_fn = lambda val: val == 1 or val == 5 
+		intensity_neutral_sep = tuneValuesSet(intensity_tune_set, intensity_exist_fn, weight_correction=weight_correction, debug=debug)
+		intensity_fine_sep = tuneValuesSet(intensity_tune_set, intensity_is_high_fn, weight_correction=weight_correction, debug=debug)
+		# positivity set must remove neutral
+		positivity_tune_set = [it for it in zip(tune_results, positivity_preds) if it[0] != 3]
+		positivity_fn = lambda val: val > 3
+		positivity_sep = tuneValuesSet(positivity_tune_set, positivity_fn, weight_correction=weight_correction, debug=debug)
+		# create the tuned rating
+		predictions_intensity, predictions_positivity, predictions_certainty = predictions_sigmoids
+		predictions_base = tf.convert_to_tensor(3, dtype=tf.int32, name="base")
+		neutral_modifier = tf.cast(tf.greater(predictions_intensity, tf.convert_to_tensor(intensity_neutral_sep, dtype=predictions_intensity.dtype, name="neutral_sep")), dtype=tf.int32, name="neutral_mod")
+		intensity_modifier = neutral_modifier + tf.cast(tf.greater(predictions_intensity, tf.convert_to_tensor(intensity_fine_sep, dtype=predictions_intensity.dtype, name="fine_sep")), dtype=tf.int32, name="fine_mod") # 0/1/2 value
+		positivity_modifier = tf.identity( tf.cast(tf.greater(predictions_positivity, tf.convert_to_tensor(positivity_sep, dtype=predictions_positivity.dtype, name="pos_sep")), dtype=tf.int32) * 2 - 1 , name="pos_mod") # -1/1 value
+		predictions_tuned_rating = predictions_base + intensity_modifier * positivity_modifier
+		# replace the untuned rating with the tuned one
+		self._session_dictionary["predictions"] = predictions_tuned_rating
+
+
+
+
+
+class SentimentRNNAttentionExtendedV2(SentimentRNNAttentionExtended):
+	def _buildPredictionSection(self, rnn_output, rnn_length, rnn_size, result_tuple):
+		result_score, _ = result_tuple
+		result_intensity = tf.maximum( tf.abs(tf.cast(result_score, tf.float32) - 3.0) - 1.0, 0.0 )
+		result_positivity = tf.cast(result_score > 3, tf.float32)
+		result_certainty = tf.cast(tf.not_equal(result_score, 3), tf.float32)
+		# the predictions aspects and their attentions
+		predictions_intensity, intensity_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="intensity")
+		predictions_positivity, positivity_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="positivity")
+		predictions_certainty, certainty_attention = createEncoderAttention(rnn_size, rnn_output, rnn_length, scope="certainty")
+		predictions_intensity_sig = tf.nn.sigmoid(predictions_intensity)
+		predictions_positivity_sig = tf.nn.sigmoid(predictions_positivity)
+		predictions_certainty_sig = tf.nn.sigmoid(predictions_certainty, name="pred_certainty")
+		# sigmoid to 0-1, and turn into a rating
+		predictions_intensity_rating = tf.cast(tf.round(predictions_intensity_sig), tf.int32) + 1 # (scale 1-2)
+		predictions_positivity_rating = tf.cast(tf.round(predictions_positivity_sig), tf.int32) * 2 - 1 # (scale -1/1)
+		predictions_certainty_rating = tf.cast(tf.round(predictions_certainty_sig), tf.int32) # (scale 0-1)
+		predictions_rating = tf.identity(3 + predictions_certainty_rating * predictions_intensity_rating * predictions_positivity_rating, name="predictions")
+		predictions_raw = tf.identity(0.5 + (tf.round(predictions_positivity_sig) - 0.5) * predictions_intensity_sig, name="raw")
+		# attention joined together
+		attention = tf.concat([tf.transpose(item, perm=[0, 2, 1]) for item in (intensity_attention, positivity_attention, certainty_attention)], axis=1)
+		# the entropy
+		entropy_certainty = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_certainty, logits=predictions_certainty)
+		entropy_intensity_unmasked = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_intensity, logits=predictions_intensity)
+		entropy_positivity_unmasked = tf.nn.sigmoid_cross_entropy_with_logits(labels=result_positivity, logits=predictions_positivity)
+		# for positivity and intensity, do not propel through those with neutral result (3)
+		blank_mask = tf.cast(tf.fill(tf.shape(result_score), 0), dtype=entropy_positivity_unmasked.dtype)
+		entropy_positivity = tf.where(result_score == 3, blank_mask, entropy_positivity_unmasked)
+		entropy_intensity = tf.where(result_score == 3, blank_mask, entropy_intensity_unmasked)
+		# return the values as in desc
+		predictions_sig = predictions_intensity_sig, predictions_positivity_sig, predictions_certainty_sig
+		return (predictions_raw, predictions_rating, predictions_sig), attention, (entropy_intensity, entropy_certainty, entropy_positivity)
+	
+	def tune(self, dataset, weight_correction=False, debug=False):
+		# take all the placeholders
+		session = self._session_dictionary["session"]
+		input_pl, _, _ = self._session_dictionary["placeholders"]
+		tune_inputs, tune_results, *_ = zip(*dataset)
+		tune_results = [int(res) for res in tune_results]
+		predictions_sigmoids = self._session_dictionary["predictions_sigmoids"]
+		# batch and feed
+		batched_tune_inputs = batch(list(tune_inputs), n=self._batch_size, shuffle_batch=False)
+		tune_predictions = []
+		for tune_batch in batched_tune_inputs:
+			tune_preds = session.run(predictions_sigmoids, feed_dict={input_pl:tune_batch})
+			tune_predictions.extend(zip(*tune_preds))
+		# tune the 3/2-4/1-5 difference through intensity and 1-2/4-5 difference through positivity
+		# split into bunches
+		intensity_preds, positivity_preds, certainty_preds = zip(*tune_predictions)
+		# intensity must remove neutral 
+		intensity_tune_set = [it for it in zip(tune_results, intensity_preds) if it[0] != 3]
+		intensity_is_high_fn = lambda val: val == 1 or val == 5 
+		intensity_sep = tuneValuesSet(intensity_tune_set, intensity_is_high_fn, weight_correction=weight_correction, debug=debug)
+		# positivity set must remove neutral
+		positivity_tune_set = [it for it in zip(tune_results, positivity_preds) if it[0] != 3]
+		positivity_fn = lambda val: val > 3
+		positivity_sep = tuneValuesSet(positivity_tune_set, positivity_fn, weight_correction=weight_correction, debug=debug)
+		# certainty
+		certainty_tune_set = list( zip(tune_results, certainty_preds) )
+		certainty_fn = lambda val: val != 3
+		certainty_sep = tuneValuesSet(certainty_tune_set, certainty_fn, weight_correction=weight_correction, debug=debug)
+		# create the tuned rating
+		predictions_intensity, predictions_positivity, predictions_certainty = predictions_sigmoids
+		predictions_base = tf.convert_to_tensor(3, dtype=tf.int32, name="base")
+		certainty_modifier = tf.cast(tf.greater(predictions_certainty, tf.convert_to_tensor(certainty_sep, dtype=predictions_certainty.dtype, name="cer_sep")), dtype=tf.int32, name="cer_mod") # 0/1 value
+		intensity_modifier = 1 + tf.cast(tf.greater(predictions_intensity, tf.convert_to_tensor(intensity_sep, dtype=predictions_intensity.dtype, name="int_sep")), dtype=tf.int32, name="int_mod") # 1/2 value
+		positivity_modifier = tf.identity( tf.cast(tf.greater(predictions_positivity, tf.convert_to_tensor(positivity_sep, dtype=predictions_positivity.dtype, name="pos_sep")), dtype=tf.int32) * 2 - 1 , name="pos_mod") # -1/1 value
+		predictions_tuned_rating = predictions_base + certainty_modifier * intensity_modifier * positivity_modifier
+		# replace the untuned rating with the tuned one
+		self._session_dictionary["predictions"] = predictions_tuned_rating
+		print("Tuning completed.")
+
+
+
+
 
 class SentimentRNNAttentionMultimodal(SentimentRNNAttentionExtended):
 	def __init__(self, *args, **kwargs):
@@ -737,6 +916,9 @@ class SentimentRNNAttentionMultimodal(SentimentRNNAttentionExtended):
 			self._session_dictionary["predictions"] = (tf.cast(self._session_dictionary["predictions"], dtype=tf.float32) - 1.45) / 4.0
 			self._first_eval = False
 		return SentimentRNNAttention.evalSession(self, dataset, detailed=detailed)
+
+
+
 
 class SentimentRNNBalanceModel(SentimentRNNAttention):
 	def _buildPredictionSection(self, outputs, input_length, cell_size, result_sigmoid):
@@ -824,4 +1006,57 @@ def batch(iterable, n=1, shuffle_batch=False):
 	for ndx in true_range:
 		yield iterable[ndx:min(ndx + n, l)]
 
+def tuneValuesSet(zipped_set, evaluation_fn, weight_correction=False, debug=False):
+	"""For a predetermined set in range 0.0-1.0, find a value within that range splitting the set into its best value
+		Args:
+			zipped_set: the list of (eval_value, sigmoid_value) to be tuned
+			evaluation_fn: function taking eval_value and return False/True for 0.0-1.0 . Callable
+			weight_correction: if true, weight eval_value inversely propotionate to its occurence
+			debug: if true, output relevant info
+		Return:
+			split_value of float
+	"""
+	current_correct, best_sep, best_sep_count = 0.0, -1, 0.0
+	val_range, pred_range = zip(*sorted(zipped_set, key=lambda it: it[-1]))
+#	if(debug):
+#		print(val_range)
+#		print(pred_range)
+	if(weight_correction):
+		get_correct_fn = _createWeightCorrectionFn(val_range, debug=debug)
+	else:
+		get_correct_fn = lambda it: 1.0
+	for idx, val in enumerate(val_range):
+		if(not evaluation_fn(val)):
+			# moving right absorbed good value (False)
+			current_correct += get_correct_fn(val)
+		else:
+			# bad value (True)
+			current_correct -= get_correct_fn(val)
+		if(current_correct > best_sep_count):
+			# override
+			best_sep_count = current_correct
+			best_sep = idx
+	limit_left = pred_range[best_sep] if best_sep >= 0 else 0.0
+	limit_right = pred_range[best_sep + 1] if(best_sep + 1 < len(pred_range)) else 1.0
+	if(debug):
+		print("Separator found at index {:d}, count {:.3f}, between {:.4f}-{:.4f}".format(best_sep, best_sep_count, limit_left, limit_right ))
+	return (limit_left + limit_right) / 2
 
+def _createWeightCorrectionFn(val_range, debug=False):
+	# correct the weights
+	rat_dict = {}
+	rat_size = float(len(val_range))
+	for rat in val_range:
+		rat_dict[rat] = rat_dict.get(rat, 0.0) + 1.0
+	rat_dict = {k:rat_size/v for k, v in rat_dict.items()}
+	if(debug):
+		print("Weight correction rat_dict: {}".format(rat_dict))
+	return lambda val: rat_dict[val]
+
+def _createSimpleTokenizationOperations(strings, op_name="tokenized"):
+	from scripts.tokenize_word import spacer, space_reductor
+	spacer, space_reductor = spacer.pattern(), space_reductor.pattern()
+	# first, add spaces to all
+	strings = tf.regex_replace(strings, spacer, " \\g<0> ", name="add_spacing")
+	strings = tf.regex_replace(strings, space_reductor, " ", name=op_name)
+	return strings

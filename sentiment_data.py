@@ -1,12 +1,13 @@
 # cleaner functions
-from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner, split_emoticon, remove_html_tags
+from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner, split_emoticon, remove_html_tags, misc_reformat
 from scripts.tokenize_word import clean
 from xer import levenshtein
 from random import shuffle
-import os, io, json
+import os, io, json, itertools
 import numpy as np
 from sentiment_eval import createDistributionGraph
 
+generate_tranform_dict = generate_tranform_dict
 #from json import JSONEncoder
 class NumpySupportedEncoder(json.JSONEncoder):
 	"""Because fuck dumping numpy object."""
@@ -90,6 +91,8 @@ def balanceSetByReduction(dataset, debug=False, reduce_mode="2worst"):
 		# reduce only the highest to 40% of AFTER set
 		after_set_prefered_size = sum(list( sorted([val for val in stats.values()]) )[:-1]) * len(stats) / (len(stats) - 1)
 		reduce_value = after_set_prefered_size * 4 / 10
+	elif(reduce_mode == "none"):
+		reduce_value = -1
 	else:
 		raise ValueError("Reduce mode {} unsupported".format(reduce_mode))
 	reduced_dataset = {k:v[:reduce_value] for k, v in categorized_dataset.items()}
@@ -237,7 +240,68 @@ def balanceSetByAllScores(data, reliability_fn=_default_reliability_function, se
 		print("Balance attempt: from overall {} to {}".format(stats, result_stats))
 	return result_dataset
 
-def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=False, reliability_mode=False, split_train_and_eval=False, debug=False, unprocessed_dataset_location=None, force_manual=False, extended_output=False, save_dataset_pretty=True, reduce_mode="2worst"):
+def _count_vocab_coverage(tokens, vocab):
+	if(len(tokens) == 0):
+		return 0.0
+	return float(len([tok for tok in tokens if tok in vocab])) / float(len(tokens))
+
+def _count_vocab_preference(tokens, vocab):
+	if(len(tokens) == 0):
+		return 0.0
+	return sum((vocab.get(token, 0.0) for token in tokens)) / float(len(tokens))
+
+def _safe_split(line):
+	"""Split only if there is space"""
+	if(line.find(" ") > -1):
+		return line.strip().split()
+	else:
+		return [line.strip()]
+
+def addMonolingualAsNeutral(old_dataset, monolingual_file, adding_scheme="largest"):
+	assert os.path.isfile(monolingual_file), "Monolingual file not found: {:s}".format(monolingual_file)
+	# read the old dataset for the vocab and the neutral sentences to be added
+	sentences, ratings, *_ = zip(*old_dataset)
+	# vocab building
+	words = (word for sentence in sentences for word in sentence.strip().split())
+	vocab, rat_count = dict(), dict()
+	for word in words:
+		vocab[word] = vocab.get(word, 0) + 1
+	if(adding_scheme == "largest"):
+		# count dupl tokens
+		vocab = {k for k, v in vocab.items() if v >= 5}
+		scorer_fn = lambda s: _count_vocab_coverage(_safe_split(s), vocab)
+	elif(adding_scheme == "preference"):
+		# count tokens basing on its commonness in the original dataset
+		vocab_full_size = float(sum(vocab.values()))
+		vocab = {k:float(v)/vocab_full_size for k, v in vocab.items() if v >= 5}
+		scorer_fn = lambda s: _count_vocab_preference(_safe_split(s), vocab)
+	else:
+		raise ValueError("Unknown adding_scheme: {:s}".format(adding_scheme))
+	for rat in ratings:
+		rat_count[rat] = rat_count.get(rat, 0) + 1
+	neutral_needed = max((val for val in rat_count.values())) - rat_count["3"] 
+	print("Maximum neutral sentences to be added into the dataset: {:d}".format(neutral_needed))
+	if(neutral_needed == 0):
+		# fast escape
+		return old_dataset
+	# rate the sentences in the monolingual file basing on the vocab coverage, and taking the needed ones
+	with io.open(monolingual_file, "r", encoding="utf-8") as mono_file:
+		best_lines = sorted((misc_reformat(line) for line in mono_file.readlines()), key=scorer_fn)
+		# remove those too short (10 tok or < 40 char)
+		best_lines = (line for line in best_lines if len(_safe_split(line)) > 10 and len(line) > 40 )
+		selected_lines = list(itertools.islice(best_lines, neutral_needed))
+		print("Actual neutral sentences found: {:d}".format(len(selected_lines)))
+	item_format_size = len(old_dataset[0])
+	# append to data
+	if(item_format_size == 2):
+		print("Filter/duplicate mode detected @ addMonolingualAsNeutral")
+		old_dataset.extend(((line, "3") for line in selected_lines))
+	elif(item_format_size == 3):
+		print("Reliablity mode detected @ addMonolingualAsNeutral")
+		old_dataset.extend(((line, "3", 0.1) for line in selected_lines))
+	return old_dataset
+
+def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=False, reliability_mode=False, split_train_and_eval=False, debug=False, unprocessed_dataset_location=None, force_manual=False, extended_output=False, save_dataset_pretty=True, reduce_mode="2worst", monolingual_file=None):
 	"""The main function to process data
 		Args:
 			raw_dataset_call_fn: if no file at unprocessed_dataset_location and save_location, call this to receive the raw data
@@ -251,6 +315,7 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 			extended_output: if true, the value is 2d numpy of score(int 1-5) and certainty(float 0.0-1.0). Used in extended mode 
 			save_dataset_pretty: The dumped file will have pretty print dataset, set to False to disable
 			reduce_mode: the method to balance the dataset by reduction. Possible options are 2worst|avg|partial. Default 2worst
+			monolingual_file: if specified, load extra sentences in this file as neutral sentences (3)
 		Returns:
 			If have dump file, load it up regardless of option
 			If split, return a dict containing `train` and `eval`
@@ -318,6 +383,7 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 		dataset = balanceSetByAllScores(dataset, debug=debug, certainty_score=extended_output, reduce_mode=reduce_mode)
 	else:
 		dataset = balanceSetByReduction(dataset, debug=debug, reduce_mode=reduce_mode)
+	
 	# eval is min(1000, 10% set)
 	distrib_graph_location = os.path.splitext(save_location)[0] + "_distribution.png"
 	if(split_train_and_eval):
@@ -325,6 +391,10 @@ def loadAndProcessDataset(raw_dataset_call_fn, save_location, duplicate_mode=Fal
 			# not predetermined split, decide on threshold and shuffle and split
 			eval_set_size = min(1000, len(dataset) // 10)
 			shuffle(dataset)
+		if(monolingual_file is not None):
+			# because eval is taking from the front, the eval should not be affected
+			print("Monolingual file detected, adding extra sentences as 3")
+			dataset = addMonolingualAsNeutral(dataset, monolingual_file)
 		split_data = {
 			"train": dataset[eval_set_size:], 
 			"eval": dataset[:eval_set_size],

@@ -1,9 +1,12 @@
 import sys, io, re, itertools, json, os
 
-tsvToken = re.compile("\d+-\d+\t\d+-\d+\t(.+?)\t(_|\d\[\d+\])")
+tsvToken = re.compile("\d+-\d+\t(\d+)-(\d+)\t(.+?)\t(_|\d\[\d+\])")
 tsvLine = re.compile("#Text=(.+)")
 
-def readTSVIntoBlocks(lines):
+def _read_token_and_rating(matcher_obj):
+	return matcher_obj.group(3), matcher_obj.group(4)
+
+def readTSVIntoBlocks(lines, read_fn=_read_token_and_rating):
 	# split the lines to blocks
 	block = []
 	for idx, line in enumerate(lines):
@@ -27,7 +30,7 @@ def readTSVIntoBlocks(lines):
 				print("Line {:s} error, cannot match.".format(line.strip()))
 				continue
 			else:
-				block.append( (matcher.group(1), matcher.group(2)) )
+				block.append(read_fn(matcher))
 	if(len(block) > 0):
 		# flush out the last
 		yield current_line, block
@@ -40,16 +43,22 @@ def convertBlockToRating(blockGenerator):
 		ratings = [k for k, g in itertools.groupby(ratings)]
 		if(len(ratings) == 0):
 			pass
-		elif(len(ratings) == 1):
-			data.append( (line, ratings[0]) )
 		else:
-			data.append( (line, int(sum(ratings) // len(ratings))) )
+			if(len(ratings) == 1):
+				correct_rating = ratings[0]
+			else:
+				correct_rating = int(sum(ratings) // len(ratings))
+			if(1 <= correct_rating <= 5):
+				data.append( (line, correct_rating) )
+			else:
+				print("Error at line {:s}: rating {:d} don't belong to [1,5]".format(line, correct_rating))
 	return data
 
 if __name__ == "__main__":
 	folder_tsv_in = sys.argv[1]
 	file_json_out = sys.argv[2]
-	print("Read data from tsv files at {:s}".format(folder_tsv_in))
+	combined_mode = len(sys.argv) > 3
+	print("Read data from tsv files at {:s}, combined mode: {}".format(folder_tsv_in, combined_mode))
 	all_lines = []
 	for root, subdirs, files in os.walk(folder_tsv_in):
 #		print(root, subdirs, files)
@@ -59,6 +68,13 @@ if __name__ == "__main__":
 				print("\tFile {:s} valid, loading in.".format(file_dir))
 				with io.open(file_dir, "r", encoding="utf-8") as tsv_file:
 					all_lines.append(tsv_file.readlines())
+					if(combined_mode):
+						if("unchecked" in file_dir):
+							print("Not unchecked, load again")
+							all_lines.append(all_lines[-1])
+						else:
+							print("Unchecked, do not load again")
+							pass
 	# convert to list of (line, block)
 	raw_blocks = [readTSVIntoBlocks(lines) for lines in all_lines]
 	# convert to (line, rating)

@@ -69,12 +69,12 @@ def createRatingMaps(stream, bundled_eval_data, image_title=None, cmap="Greys"):
 			the stream with the rating map
 	"""
 	# assert eval data and all concerning 
-	num_sample = len(bundled_eval_data)
 	sample_data = np.zeros([5, 5], dtype=int)
 	for _, c, p in bundled_eval_data:
 		col = int(c) - 1
 		row = int(p) - 1
-		sample_data[col][row] += 1
+		# row is first; column later
+		sample_data[row][col] += 1
 #	sample_data = np.asarray(sample_data)
 	labels = ["Very Negative", "Negative", "Neutral", "Positive", "Very Positive"]
 	text_color = ("black", "white")
