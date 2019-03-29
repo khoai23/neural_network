@@ -1,17 +1,20 @@
 import tensorflow as tf
 import numpy as np
 import sys, io, os, re
-import json, argparse
+import json, argparse, csv
 # additional functions
 # the list of possible models
 import sentiment_models as model_lib
 # hack| load the generate_transform_dict from the import over there
-from sentiment_data import loadAndProcessDataset, generate_tranform_dict, custom_vi_cleaner, NumpySupportedEncoder
+from sentiment_data import loadAndProcessDataset, generate_tranform_dict, custom_vi_cleaner, NumpySupportedEncoder, _loadJSONConfig
 from sentiment_dictionary import tryApplyDictionaryToPredictions, loadDictionary
 # constant for the moment
 MODEL_DEFAULT_LOCATION = "/home/quan/Workspace/Data/model/espresso/default"
 EMB_DEFAULT_LOCATION = "/home/quan/Workspace/Data/espresso/vi_trimmed_embedding.txt"
 MONOLINGUAL_FILE_LOCATION = "/home/quan/Workspace/Data/monolingual/vi_mono.txt"
+
+# config to read jsons as sentiment data
+ALL_LOCATIONS = _loadJSONConfig()["sentiment_data_config"]
 
 def readPretrainedEmbedding(file_path):
 	with io.open(file_path, "r", encoding="utf8") as emb_file:
@@ -54,10 +57,33 @@ def readUnknownWords(recognized_words, list_sentences, occurence_floor=5):
 	del set_additional_words
 	return additional_words
 
-def readJSONData(file_path, input_field="input", output_field="output", duplicate_reduction=False):
+def readJSONData(file_path, input_field="input", output_field="output", duplicate_reduction=False, infer_mode=False, subtitution_dict=None):
+	"""Read JSON data into a block
+		Args:
+			file_path: the file to load into
+			input_field: the field of the obj containing the input (list of lines)
+			output_field: the field of the obj containing the output (list of ratings)
+			duplicate_reduction: if true, naively remove the duplications and stretches
+			infer_mode: if true, only read the input field
+			subtitution_dict: either a dict or a file containing the dictionary, of {phrase:correct_phrase}
+		Returns:
+			if infer_mode, return (json obj, lines)
+			otherwise    , return list of (lines, ratings)
+	"""
 	assert os.path.isfile(file_path), "File {:s} not valid!".format(file_path)
-	with io.open(file_path, "r", encoding="utf8") as json_file:
+	with io.open(file_path, "r", encoding="utf-8") as json_file:
 		json_data = list(json.load(json_file))
+	# check for subtitution dict, read if true. TODO turn this into a better option, TODO integrate into the model
+	if(subtitution_dict and isinstance(subtitution_dict, str)):
+		print("Searching for json subtitution_dict @ {:s}".format(subtitution_dict))
+		with io.open(subtitution_dict, "r", encoding="utf-8") as subtitution_file:
+			subtitution_dict = json.load(subtitution_file)
+	if(subtitution_dict and isinstance(subtitution_dict, dict)):
+		# changes all keys into concerning regex, only take values with either spaces or start/endline
+		# similarly, values must have extra spaces
+		regex_form = "(^| ){:s}($| )"
+		expanded_form = " {:s} "
+		subtitution_dict = {re.compile(regex_form.format(k)):expanded_form.format(v) for k, v in subtitution_dict.items()}
 	# prepare the cleaner as well
 	detector_set, transform_dict = generate_tranform_dict()
 	if(duplicate_reduction):
@@ -75,27 +101,47 @@ def readJSONData(file_path, input_field="input", output_field="output", duplicat
 		def cleaner(line):
 #			orig_line = line
 			line = re.sub(long_dot_regex, " … ", line)
-#			search_result = re.search(duplicate_word_regex, line)
 			line = re.sub(duplicate_word_regex, r"\1", line)
-#			line = re.sub(duplicate_symbol_regex, "\1", line)
 			line = re.sub(redundant_regex, r"\1", line)
 			line = re.sub(star_regex, r"\1 sao", line)
+			if(subtitution_dict and isinstance(subtitution_dict, dict)):
+				# subtitute before the cleaner, to take advantage of cleaner's multiple space clearance
+				for k, v in subtitution_dict.items():
+					line = re.sub(k, v, line)
 			line = custom_vi_cleaner(line, detector_set, transform_dict)
 			line = re.sub(el_symbol_regex, "", line)
-#			print("orig_line > line: {:s} > {:s}".format(orig_line, line))
 			return line
 	else:
 		cleaner = lambda line: custom_vi_cleaner(line, detector_set, transform_dict)
 	full_data_list = []
 	for block in json_data:
-		# data is tuple of (input, correct_output)
-		# assert input_field in block and output_field in block, "Block error: {}".format(block)
-		inputs_batch = block[input_field]
-		output_batch = block[output_field]
-		# process the input batch using the custom cleaner
-		inputs_batch = [cleaner(line) for line in inputs_batch]
-		full_data_list.extend(zip(inputs_batch, output_batch))
-	return full_data_list
+		input_batch = block[input_field]
+		input_batch = [cleaner(line) for line in input_batch]
+		if(not infer_mode):
+			# data is tuple of (input, correct_output)
+			output_batch = block[output_field]
+			full_data_list.extend(zip(input_batch, output_batch))
+		else:
+			# data is single cleaned line
+			full_data_list.extend(input_batch)
+	if(infer_mode):
+		return json_data, full_data_list
+	else:
+		return full_data_list
+
+def readCSVData(file_path, input_field=0, output_field=1, remove_first_row=True, infer_mode=False):
+	with io.open(file_path, "r", encoding="utf-8") as csv_file:
+		data = csv.reader(csv_file)
+		if(remove_first_row):
+			print("Removing the first row, which is: {:s}".format(", ".join(data[0])))
+			data = data[1:]
+	all_columns = zip(*data)
+	input_batch = all_columns[input_field]
+	if(not infer_mode):
+		output_batch = all_columns[output_field]
+		return list(zip(input_batch, output_batch))
+	else:
+		return list(input_batch)
 
 def readRawData(folder, train_folder="train", test_folder="test", train_file_format="training_{:s}.txt", test_file="test.txt"):
 	assert os.path.isdir(folder), "Path is not folder"
@@ -125,17 +171,6 @@ def readRawData(folder, train_folder="train", test_folder="test", train_file_for
 #		print("{} ({})".format(line, score))
 	return train_data_list, eval_data_list
 
-ALL_LOCATIONS = [
-	{"type":"folder", "name":"SA-2016", "path":"/home/quan/Workspace/Data/espresso", "train_folder":"SA2016-training_data", "test_folder":"SA2016-TestData-Ans/SA2016-TestData-Ans", "train_file_format":"SA-training_{:s}.txt", "test_file":"test_raw_ANS.txt"},
-	{"type":"folder", "name":"IMDB", "path":"/home/quan/Workspace/Data/espresso/aclImdb", "train_folder":"train", "test_folder":"test", "train_file_format":"{:s}.txt", "test_file":"{:s}.txt"},
-	{"type":"file", "name":"json_test", "path":"/home/quan/Workspace/Data/espresso/ttn_data.json_2018-11-12", "input_field":"ttn_bl_noi_dung", "output_field":"ttn_bl_diem"},
-	{"type":"file", "name":"json_10k", "path":"/home/quan/Workspace/Data/espresso/tsv_manually_annotated/json_10k.txt", "input_field":"lines", "output_field":"ratings", "duplicate_reduction":True},
-	{"type":"file", "name":"local_json_10k", "path":"./data/json_10k.txt", "input_field":"lines", "output_field":"ratings", "duplicate_reduction":True},
-	{"type":"files", "name":"json_20k", "path":["/home/quan/Workspace/Data/espresso/tsv_manually_annotated/json_10k.txt", "/home/quan/Workspace/Data/espresso/tsv_manually_annotated/json_10k_problem.txt"], "input_field":"lines", "output_field":"ratings", "duplicate_reduction":True},
-	{"type":"files", "name":"local_json_20k", "path":["./data/json_10k.txt", "./data/json_10k_problem.txt"], "input_field":"lines", "output_field":"ratings", "duplicate_reduction":True},
-	{"type":"file", "name":"json_combined", "path":"/home/quan/Workspace/Data/espresso/tsv_manually_annotated/json_joined.txt", "input_field":"lines", "output_field":"ratings", "duplicate_reduction":True},
-]
-
 def tryReadDataFromPath(data_config):
 	if(isinstance(data_config, str)):
 		data_config = next((conf for conf in ALL_LOCATIONS if conf["name"] == data_config))
@@ -150,38 +185,46 @@ def tryReadDataFromPath(data_config):
 			data.extend( readJSONData(p, **data_config) )
 		return data
 	elif(os.path.isdir(path) and path_type == "folder"):
-		print("Path {:s} is directory, use SA-2016 format".format(path))
+		print("Path {:s} is directory, use splitted text(SA-2016) format".format(path))
 		return readRawData(path, **data_config)
 	elif(os.path.isfile(path) and path_type == "file"):
 		print("Path {:s} is single file, use JSON reading format".format(path))
 		return readJSONData(path, **data_config)
+	elif(os.path.isfile(path) and path_type == "csv"):
+		print("Path {:s} is single file, use CSV reading format".format(path))
+		return readCSVData(path, **data_config)
 	else:
 		raise ValueError("Path {:s} invalid, mismatch with {}".format(path, path_type))
 
 def constructParser():
 	parser = argparse.ArgumentParser(description='A rewrite of sentiment analysis.')
+	# VITAL, used for all phases
 	parser.add_argument('-m','--mode', type=str, default='default', choices=["default", "data_process", "train", "infer", "tune", "eval", "export", "debug"], help='Mode of the parser. Default all (default)')
-	parser.add_argument('--data_processing_mode', type=str, default='reliability', choices=["filter", "duplicate", "reliability"], help='Data processing mode. default reliability')
 	parser.add_argument('--model_structure', type=str, default='attention', choices=["attention", "attention_extended", "attention_extended_v2", "attention_multimodal", "sum"], help='The model structure to be used in sentiment model. Default attention')
-#	parser.add_argument('--data_file', type=str, default=DATA_DEFAULT_LOCATION, help='Location of files to train, default ./')
-	parser.add_argument('--data_config', type=str, choices=[conf["name"] for conf in ALL_LOCATIONS], default=None, help='Location of files to train, default ./')
 	parser.add_argument('--model_dir', type=str, default="./", help='Location of files to train, default ./')
-	parser.add_argument('--gpu_disable_allow_growth', action="store_true", help='Use to disable gpu_allow_growth')
 	parser.add_argument('--debug', action="store_true", help='Use to enable debug information')
+	parser.add_argument('--gpu_disable_allow_growth', action="store_true", help='Use to disable gpu_allow_growth')
+	# DATA, data_process phase, can be ignored after first run through
+	parser.add_argument('--data_processing_mode', type=str, default='reliability', choices=["filter", "duplicate", "reliability"], help='Data processing mode. default reliability')
+	parser.add_argument('--balance_reduce_mode', type=str, choices=["2worst", "partial", "avg", "none"], default="2worst", help='Only in data_processing_mode reliability. The method used to balance the dataset. See sentiment_data\'s balanceSetByReduction for detail')
+	parser.add_argument('--data_config', type=str, choices=[conf["name"] for conf in ALL_LOCATIONS], default=None, help='Location of files to train, default ./')
 	parser.add_argument('--force_manual', action="store_true", help='Enable to force rebuilding dataset')
+	# TRAINING, train phase, need to be correct for subsequent runs involving train
+	parser.add_argument('--optimizer', type=str, choices=["Adam", "SGD"], default="SGD", help="Type of optimizer during training")
 	parser.add_argument('--use_trained_embedding', action="store_true", help='Enable to use trained embeddings, specified with trained_embedding_location')
 	parser.add_argument('--trained_embedding_location', type=str, default=EMB_DEFAULT_LOCATION, help='The location of the embedding to be used.')
-	parser.add_argument('--checkpoint_index', type=str, default=None, help='The index of the checkpoint to be retrieved for eval/export. Default None (latest)')
-	parser.add_argument('--balance_reduce_mode', type=str, choices=["2worst", "partial", "avg", "none"], default="2worst", help='Only in data_processing_mode reliability. The method used to balance the dataset. See sentiment_data\'s balanceSetByReduction for detail')
 	parser.add_argument('--use_weighted_loss', action="store_true", help='Enable to use weighted loss, currently only available to attention_extended')
 	parser.add_argument('--use_monolingual_data', action="store_true", help='Enable to use external monolingual data as neutral(3)')
 	parser.add_argument('--monolingual_data_location', type=str, default=MONOLINGUAL_FILE_LOCATION, help='Location for the monolingual data')
+	# EVAL, INFER, EXPORT arguments, for their respective mode
+	parser.add_argument('--eval_print_alignment', action="store_true", help='Enable to eval by saving an alignment image to a specified location')
+	parser.add_argument('--infer_target', type=str, default=None, help='In infer mode, read JSON containing line data from here.')
+	parser.add_argument('--export_override', action="store_true", help='If true, override the export folder as needed')
+	# OPTIONAL arguments involving the above process
+	parser.add_argument('--checkpoint_index', type=str, default=None, help='The index of the checkpoint to be retrieved for eval/export. Default None (latest)')
 	parser.add_argument('--use_tuning', action="store_true", help='Use tuned parameters to export the rating value')
 	parser.add_argument('--tuning_correction', action="store_true", help='Use correction value instead of 1-1')
-	# extra arguments dependent on modes
-	parser.add_argument('--eval_print_alignment', action="store_true", help='Enable to eval by saving an alignment image to a specified location')
 	parser.add_argument('--external_dictionary', type=str, default=None, help='If specified, use an external dictionary to rectify the result.')
-	parser.add_argument('--export_override', action="store_true", help='If true, override the export folder as needed')
 	return parser.parse_args()
 
 def createModel(args, dataset):
@@ -217,21 +260,21 @@ def createModel(args, dataset):
 
 	if(args.model_structure == "attention"):
 		model = model_lib.SentimentRNNAttention(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
-		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	elif(args.model_structure == "attention_extended"):
 		args.use_certainty = False
 		model = model_lib.SentimentRNNAttentionExtended(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss, use_certainty_loss=args.use_certainty)
-		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	elif(args.model_structure == "attention_extended_v2"):
 		args.use_certainty = False
 		model = model_lib.SentimentRNNAttentionExtendedV2(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss, use_certainty_loss=args.use_certainty)
-		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	elif(args.model_structure == "attention_multimodal"):
 		model = model_lib.SentimentRNNAttentionMultimodal(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
-		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	elif(args.model_structure == "sum"):
 		model = model_lib.SentimentRNNBalanceModel(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
-		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	else:
 		raise NotImplementedError("Model structure not recognized: {:s}".format(args.model_structure))
 	return model
@@ -349,15 +392,40 @@ if __name__ == "__main__":
 	if((args.check_mode("tune") or args.use_tuning) and eval_set):
 		print("Run tuning on eval set")
 		sentiment_model.tune(eval_set, weight_correction=args.tuning_correction, debug=args.debug)
+	
+	# create a rectifier for external dictionary
+	if(args.external_dictionary):
+		# force to load only, will throw exception if false
+		dictionary = loadDictionary(args.external_dictionary, force_reload=False, dict_paths=None, rev_paths=None)
+		rectifier_fn = lambda sents, rats: tryApplyDictionaryToPredictions(sents, rats, dictionary, debug=args.debug)
+	else:
+		rectifier_fn = None
+	
+	if(args.mode == "infer"):
+		read_location = args.infer_target
+		write_location_base, extension = os.path.splitext(read_location)
+		write_location = write_location_base + "_pred" + extension
+		data_config = next((conf for conf in ALL_LOCATIONS if conf["name"] == args.data_config))
+		data_config["input_field"] = in_field = data_config.get("input_field", "lines")
+		data_config["output_field"] = out_field = data_config.get("output_field", "ratings")
+		print("Entering infer mode, target file {:s}, input field {:s}, output_field {:s}, output file {:s}".format(read_location, in_field, out_field, write_location))
+#		with io.open(read_location, "r", encoding="utf-8") as read_file, io.open(write_location, "w", encoding="utf-8") as write_file:
+#			data = json.load(read_file)[0]
+#			predictions = sentiment_model.inferSession(data[in_field], external_fn=rectifier_fn)
+#			data[out_field] = list(predictions)
+#			json.dump([data], write_file, ensure_ascii=False, cls=NumpySupportedEncoder)
+		# remove the unneeded arguments in data_config
+		_ = data_config.pop("name"), data_config.pop("type"), data_config.pop("path")
+		json_data, lines = readJSONData(read_location, infer_mode=True, **data_config)
+		predictions = sentiment_model.inferSession(lines, external_fn=rectifier_fn)
+		json_data[0][out_field] = list(predictions)
+		with io.open(write_location, "w", encoding="utf-8") as write_file:
+			json.dump(json_data, write_file, ensure_ascii=False, cls=NumpySupportedEncoder)
+		print("Inference complete, exiting")
+		sys.exit()
 
 	if(args.check_mode("eval") and eval_set):
-		if(args.external_dictionary):
-			# force to load only, will throw exception if false
-			dictionary = loadDictionary(args.external_dictionary, force_reload=False, dict_paths=None, rev_paths=None)
-			rectifier_fn = lambda sents, rats: tryApplyDictionaryToPredictions(sents, rats, dictionary, debug=args.debug)
-		else:
-			rectifier_fn = None
-		sentiment_model.evalSession(eval_set, detailed=True, alignment_sample=args.eval_print_alignment, alignment_file_path=args.save_file, external_fn=rectifier_fn)
+		sentiment_model.evalSession(eval_set, detailed=True, alignment_sample=args.eval_print_alignment, file_path=args.save_file, external_fn=rectifier_fn)
 	
 	if(args.check_mode("export")):
 		checkpoint = args.checkpoint_index if args.checkpoint_index else 0

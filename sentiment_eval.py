@@ -63,14 +63,14 @@ def createRatingMaps(stream, bundled_eval_data, image_title=None, cmap="Greys"):
 	"""Draw a map showing the distributions of evaluation result
 		Args:
 			stream: the stream to send the image into. IOBuffer
-			bundled_eval_data: the data after evaluation, [num_sample] of (line, corr, pred)
+			bundled_eval_data: the data after evaluation, [num_sample] of (corr, line, pred)
 			image_title: the header for the map, default None
 		Returns:
 			the stream with the rating map
 	"""
 	# assert eval data and all concerning 
 	sample_data = np.zeros([5, 5], dtype=int)
-	for _, c, p in bundled_eval_data:
+	for c, _, p in bundled_eval_data:
 		col = int(c) - 1
 		row = int(p) - 1
 		# row is first; column later

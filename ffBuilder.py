@@ -827,6 +827,7 @@ def loadFromPath(session, path, checkpoint=None, debug=False):
 	try:
 		if(checkpoint):
 			path = path + "-" + str(checkpoint)
+			latest_path = path
 		else:
 			directory, file_name = os.path.split(path)
 			latest_path = tf.train.latest_checkpoint(directory, latest_filename="checkpoint")

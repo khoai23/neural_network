@@ -1,6 +1,7 @@
 import io, os, json, sys, re
 from scripts.cleaner import generate_tranform_dict, vietnamese_ghost_characters_cleaner
 import argparse
+from sentiment_data import _loadJSONConfig
 
 CSV_PATH = "/home/quan/Workspace/Data/espresso/VnEmoLex.csv"
 TXT_PATH = "/home/quan/Workspace/Data/espresso/VietSentiWordnet_Ver1.3.5.txt"
@@ -262,7 +263,7 @@ def jsonDataReader(file_path=DEBUG_FILE_LOCATION):
 	sentences, ratings = zip(*data)
 	return list(sentences), [int(list(rat.keys())[0]) for rat in ratings]
 
-LIST_AVAILABLE_FILES = {"VnEmoLex": CSV_PATH, "VnSentiWordnet": TXT_PATH}
+LIST_AVAILABLE_FILES, LIST_REV_PATHS = _loadJSONConfig()["sentiment_dictionary"]
 # TODO list the negative & exclamation later. For now, the 
 
 if __name__ == "__main__":
@@ -277,7 +278,8 @@ if __name__ == "__main__":
 	list_files_negation = [REV_PATH]
 
 	dictionary = positive_set, negative_set, reverse_set = loadDictionary(save_path=args.output, dict_path=list_files_dictionary, rev_path=list_files_negation, force_reload=args.force_reload)
-	sentences, ratings = jsonDataReader(file_path=args.debug_output_path)
-	#debugDictCoverage(sentences, dictionary)
-	debugApplicationCoverage(sentences, ratings, dictionary)
+	if(os.path.isfile(args.debug_output_path)):
+		sentences, ratings = jsonDataReader(file_path=args.debug_output_path)
+		#debugDictCoverage(sentences, dictionary)
+		debugApplicationCoverage(sentences, ratings, dictionary)
 	sys.exit()

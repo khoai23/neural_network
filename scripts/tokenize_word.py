@@ -6,7 +6,7 @@ COUNTER_PRINT = 10000
 # not yet implemented
 replacement_set = [("–", "-")]
 
-symbols = "!@#\$%\^\*\(\)\+={}\|\[\]\/\?:;<>\'\"\,\.\-"
+symbols = "!@#\$%\^\*\(\)\+={}\|\[\]\/\?:;<>\'\"\,\.\-\n"
 spacer = re.compile("[{:s}]".format(symbols))
 space_reductor = re.compile(" {2,}")
 double_quote = re.compile("``|\'\'")

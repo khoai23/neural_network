@@ -26,6 +26,12 @@ class NumpySupportedEncoder(json.JSONEncoder):
 			print(type(obj))
 			return super(NumpySupportedEncoder, self).default(obj)
 
+# custom function to load the sentiment_config.json from this very directory
+JSON_CONFIG_LOCATION = os.path.join( os.path.dirname(os.path.realpath(__file__)), "sentiment_config.json")
+def _loadJSONConfig(location=JSON_CONFIG_LOCATION):
+	with io.open(location, "r", encoding="utf-8") as config_file:
+		return json.load(config_file)
+	
 def custom_vi_cleaner(line, detector_set, transform_dict):
 #	orig_line = line
 	# lowercase, remove diacritics and separate punctuation
@@ -35,6 +41,7 @@ def custom_vi_cleaner(line, detector_set, transform_dict):
 	cleaned_line = clean(line).lower()
 #	print("Clean: {} -> {}".format(orig_line, cleaned_line))
 	return cleaned_line
+
 def score(filter_type, l1, l2):
 	assert filter_type == "wer" or filter_type == "cer"
 	# Compare l1, l2 by filter type

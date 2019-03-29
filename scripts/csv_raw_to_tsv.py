@@ -1,4 +1,5 @@
 import sys, io, re
+import string
 
 checkerCSVRegex = re.compile("\"(.+)\",\"([\d,]+)\"," + ",".join(["(\d+)"] * 5))
 
@@ -41,6 +42,12 @@ def selectStar(examples, sort_by_certainty=True):
 tsvHeader = "#FORMAT=WebAnno TSV 3.2\n#T_SP=webanno.custom.Sentence_Sentiment|Rating\n"
 tsvWordFormat = "\n{:d}-{:d}\t{:d}-{:d}\t{:s}\t{:d}[{:d}]\t"
 
+_checker_char = chr(0x10000)
+def _true_length(word):
+	# WebAnno use utf-16 for internal processing (Java), hence it need to increase for every character larger than U+10000
+	increase_length = sum( (1 for char in word if char >= _checker_char) )
+	return len(word) + increase_length
+
 def convertToTSV(stared_examples, stream):
 	# load the format, and custom tag
 	stream.write(tsvHeader)
@@ -52,33 +59,40 @@ def convertToTSV(stared_examples, stream):
 		# first, the old unformatted sentence
 		stream.write("\n#Text={:s}".format(content))
 		# split the into words, and format them
-		word_begin = 0
+		word_begin = true_word_begin= 0
 		word_count = 1
 		for char_idx, char in enumerate(content):
 			if(char in " .,\"?!"):
 				# if word separator or sentence separator
 				word_end = char_idx
 				if(word_begin < word_end):
-					# only add word if the word is not empty(length = 1)
+					# only add word if the word is not empty(length >= 1)
 					word = content[word_begin:word_end]
-					stream.write(tsvWordFormat.format(content_index+1, word_count, overall_index+word_begin, overall_index+word_end, word, star, content_index+1))
+					true_word_length = _true_length(word)
+					true_word_end = true_word_begin + true_word_length
+					stream.write(tsvWordFormat.format(content_index+1, word_count, overall_index+true_word_begin, overall_index+true_word_end, word, star, content_index+1))
 					word_count += 1
 				if(char != " "):
 					# is sentence separator, add them as a token
 					word_begin = char_idx
 					word_end = char_idx + 1
-					stream.write(tsvWordFormat.format(content_index+1, word_count, overall_index+word_begin, overall_index+word_end, char, star, content_index+1))
+					# true index will count as 1 for these default separator
+					true_word_begin = true_word_end
+					true_word_end = true_word_begin + 1
+					stream.write(tsvWordFormat.format(content_index+1, word_count, overall_index+true_word_begin, overall_index+true_word_end, char, star, content_index+1))
 					word_count += 1
 				# once done, set the begining of the next word to the last end
 				word_begin = word_end + 1
+				true_word_begin = true_word_end + 1
 		if(word_begin < len(content)):
 			# load the last word
 			word_end = len(content)
 			word = content[word_begin:word_end]
-			stream.write(tsvWordFormat.format(content_index+1, word_count, overall_index+word_begin, overall_index+word_end, word, star, content_index+1))
+			true_word_end = true_word_begin + _true_length(word)
+			stream.write(tsvWordFormat.format(content_index+1, word_count, overall_index+true_word_begin, overall_index+true_word_end, word, star, content_index+1))
 		# done with the whole thing, add to the overall index
 		# add content_length and 2 to the overall index since the separator between contents are \n\n
-		overall_index += len(content) + 2
+		overall_index += _true_length(content) + 2
 
 CHUNK_SIZE = 1000
 
@@ -91,7 +105,8 @@ if __name__ == "__main__":
 		stared_content = selectStar(raw_content)
 	# split to chunk size of 1k
 	print("Load data into tsv file at {:s}".format(file_tsv_out))
-	if("{:d}" in file_tsv_out):
+	# check if string has format
+	if(any(string.Formatter().parse(file_tsv_out))):
 		print("Have index format, print out as multiple indexed files with chunk size {:d}.".format(CHUNK_SIZE))
 		for chunk_idx in range(len(stared_content) // CHUNK_SIZE):
 			chunk = stared_content[CHUNK_SIZE*chunk_idx : CHUNK_SIZE*(chunk_idx+1)]
