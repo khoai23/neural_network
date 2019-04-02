@@ -133,10 +133,11 @@ def readCSVData(file_path, input_field=0, output_field=1, remove_first_row=True,
 	with io.open(file_path, "r", encoding="utf-8") as csv_file:
 		data = csv.reader(csv_file)
 		if(remove_first_row):
-			print("Removing the first row, which is: {:s}".format(", ".join(data[0])))
-			data = data[1:]
-	all_columns = zip(*data)
+			first_line = next(data)
+			print("Removing the first row, which is: {:s}".format(", ".join(first_line)))
+		all_columns = list(zip(*data))
 	input_batch = all_columns[input_field]
+	input_batch = [line[1:-1] if line[0] == line[-1] == "\"" else line for line in input_batch] # remove quote
 	if(not infer_mode):
 		output_batch = all_columns[output_field]
 		return list(zip(input_batch, output_batch))
@@ -147,18 +148,19 @@ def readRawData(folder, train_folder="train", test_folder="test", train_file_for
 	assert os.path.isdir(folder), "Path is not folder"
 	# prepare cleaner
 	detector_set, transform_dict = generate_tranform_dict()
+	clean = lambda line: custom_vi_cleaner(line.replace("<br \>", "\n"), detector_set, transform_dict)
 	train_data_list = []
 	for file_type, rating_type in zip(["positive", "neutral", "negative"], ["5", "3", "1"]):
 		with io.open(os.path.join(folder, train_folder, train_file_format.format(file_type)), "r", encoding="utf-8") as read_file:
 			# the blank are removed in sentiment_data process, but just in case
-			train_data_list.extend( ((custom_vi_cleaner(line, detector_set, transform_dict), rating_type) for line in read_file.readlines() if line.strip() != "") )
+			train_data_list.extend( ((clean(line), rating_type) for line in read_file.readlines() if line.strip() != "") )
 	eval_data_list = []
 	if("{:s}" in test_file):
 		print("Test file is formatable, do as train")
 		for file_type, rating_type in zip(["positive", "neutral", "negative"], ["5", "3", "1"]):
-			with io.open(os.path.join(folder, train_folder, train_file_format.format(file_type)), "r", encoding="utf-8") as read_file:
+			with io.open(os.path.join(folder, test_folder, test_file.format(file_type)), "r", encoding="utf-8") as read_file:
 				# the blank are removed in sentiment_data process, but just in case
-				eval_data_list.extend( ((custom_vi_cleaner(line, detector_set, transform_dict), rating_type) for line in read_file.readlines() if line.strip() != "") )
+				eval_data_list.extend( ((clean(line), rating_type) for line in read_file.readlines() if line.strip() != "") )
 	else:
 		print("Test file is non-formatable, read as one big test")
 		with io.open(os.path.join(folder, test_folder, test_file), "r", encoding="utf-8") as read_file:
@@ -166,7 +168,7 @@ def readRawData(folder, train_folder="train", test_folder="test", train_file_for
 			for test_line, answer_line in zip(read_file, read_file):
 				score = score_convert_dict[answer_line.strip()]
 				# read two lines at once, and add them into the eval set
-				eval_data_list.append( (custom_vi_cleaner(test_line, detector_set, transform_dict), score) )
+				eval_data_list.append( (clean(line), score) )
 #	for line, score in eval_data_list:
 #		print("{} ({})".format(line, score))
 	return train_data_list, eval_data_list
@@ -290,7 +292,7 @@ if __name__ == "__main__":
 #	args.embedding_file = os.path.join(args.data_dir, args.embedding_file)
 	args.save_file = os.path.join(args.model_dir, "default_save")
 	args.export_dir = os.path.join(args.model_dir, "export")
-	args.cell_size = 128
+	args.cell_size = 512
 	args.epoch = 100
 	args.batch_size = 64
 	args.dropout = 0.8
