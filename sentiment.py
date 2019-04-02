@@ -168,7 +168,7 @@ def readRawData(folder, train_folder="train", test_folder="test", train_file_for
 			for test_line, answer_line in zip(read_file, read_file):
 				score = score_convert_dict[answer_line.strip()]
 				# read two lines at once, and add them into the eval set
-				eval_data_list.append( (clean(line), score) )
+				eval_data_list.append( (clean(test_line), score) )
 #	for line, score in eval_data_list:
 #		print("{} ({})".format(line, score))
 	return train_data_list, eval_data_list
@@ -202,7 +202,7 @@ def constructParser():
 	parser = argparse.ArgumentParser(description='A rewrite of sentiment analysis.')
 	# VITAL, used for all phases
 	parser.add_argument('-m','--mode', type=str, default='default', choices=["default", "data_process", "train", "infer", "tune", "eval", "export", "debug"], help='Mode of the parser. Default all (default)')
-	parser.add_argument('--model_structure', type=str, default='attention', choices=["attention", "attention_extended", "attention_extended_v2", "attention_multimodal", "sum"], help='The model structure to be used in sentiment model. Default attention')
+	parser.add_argument('--model_structure', type=str, default='attention', choices=["attention", "attention_extended", "attention_extended_v2", "attention_multimodal", "sum", "self_attention"], help='The model structure to be used in sentiment model. Default attention')
 	parser.add_argument('--model_dir', type=str, default="./", help='Location of files to train, default ./')
 	parser.add_argument('--debug', action="store_true", help='Use to enable debug information')
 	parser.add_argument('--gpu_disable_allow_growth', action="store_true", help='Use to disable gpu_allow_growth')
@@ -277,6 +277,9 @@ def createModel(args, dataset):
 	elif(args.model_structure == "sum"):
 		model = model_lib.SentimentRNNBalanceModel(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
 		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
+	elif(args.model_structure == "self_attention"):
+		model = model_lib.SentimentSelfAttention(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	else:
 		raise NotImplementedError("Model structure not recognized: {:s}".format(args.model_structure))
 	return model
@@ -292,7 +295,7 @@ if __name__ == "__main__":
 #	args.embedding_file = os.path.join(args.data_dir, args.embedding_file)
 	args.save_file = os.path.join(args.model_dir, "default_save")
 	args.export_dir = os.path.join(args.model_dir, "export")
-	args.cell_size = 512
+	args.cell_size = 128
 	args.epoch = 100
 	args.batch_size = 64
 	args.dropout = 0.8

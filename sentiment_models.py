@@ -616,9 +616,9 @@ class SentimentSelfAttention(SentimentRNNAttention):
 		self._debug = debug
 		self._shuffle_batch = shuffle_batch
 		self._clear_word = "<cls>"
+		self._loss_weight = None
 
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, depth=4, head=4, additional_words=None, gpu_allow_growth=True, optimizer="SGD"):
-		raise NotImplementedError()
 		# initialize the session
 		config = tf.ConfigProto()
 		config.gpu_options.allow_growth = gpu_allow_growth
@@ -635,18 +635,20 @@ class SentimentSelfAttention(SentimentRNNAttention):
 		input_indices = word_table.lookup(input_tokenized_dense, name="ids_input")
 		# add the clear id to the start of the indices list
 		batch_size = tf.shape(input_indices)[0]
-		batched_clear_ids = tf.fill(clear_id, [batch_size, 1])
-		input_indices = tf.concat([batched_clear_ids, input_indices], axis=2)
+		batched_clear_ids = tf.fill([batch_size, 1], clear_id)
+		input_indices = tf.concat([batched_clear_ids, input_indices], axis=1)
 		input_length = input_length + 1
 		# lookup the indices by the embeddings
-		prev_depth = tf.nn.embedding_lookup(embeddings_tensor, input_indices)
+		inputs = tf.nn.embedding_lookup(embeddings_tensor, input_indices)
+		# encode their positions using the sinusoid scheme
+		prev_depth = inputs = sinusoidEncoding(inputs)
 		# construct the layers
 		dropout_placeholder = tf.placeholder_with_default(1.0, shape=(), name="dropout")
 		mask = tf.sequence_mask(input_length, name="mask")
 		attentions = []
 		for i in range(depth):
 			layer_name = "layer_{:d}".format(i)
-			next_depth, attention = createSelfAttentionLayer(prev_depth, input_length, input_masks=mask, head=head, dropout_t=dropout_placeholder, name=layer_name)
+			next_depth, attention = createSelfAttentionLayer(prev_depth, input_length, cell_size, input_masks=mask, head=head, dropout_t=dropout_placeholder, name=layer_name)
 			prev_depth = next_depth
 			attentions.append(attention)
 		# concat into [depth, batch_size, q_length, k_length], reduce to query of the clear id, and transpose into [batch_size, depth, k_length]
@@ -1202,57 +1204,77 @@ def _createSimpleTokenizationOperations(strings, op_name="tokenized"):
 	strings = tf.regex_replace(strings, space_reductor, " ", name=op_name)
 	return strings
 
-def _splitHead(tensor, head):
+def _splitHead(tensor, head, embedding_size):
 	"""Reshape and transpose [batch_size, length, emb] into [batch_size, head, length, head_size]"""
 	batch_size = tf.shape(tensor)[0]
 	length = tf.shape(tensor)[1]
-	head_size = tf.shape(tensor)[2] // head
+	head_size = embedding_size // head
 	tensor = tf.reshape(tensor, [batch_size, length, head, head_size])
 	return tf.transpose(tensor, [0, 2, 1, 3])
 
-def _rejoinHead(tensor, head):
+def _rejoinHead(tensor, head, embedding_size):
 	tensor = tf.transpose(tensor, [0, 2, 1, 3])
 	batch_size = tf.shape(tensor)[0]
 	length = tf.shape(tensor)[1]
-	return tf.reshape(tensor, [batch_size, length, -1])
+	return tf.reshape(tensor, [batch_size, length, embedding_size])
 
-def createSelfAttentionLayer(inputs, input_lengths, input_masks=None, head=4, dropout_t=None, name="default"):
+def createSelfAttentionLayer(inputs, input_lengths, embedding_size, input_masks=None, head=4, dropout_t=None, name="default"):
 	"""Create a layer of self attention 
 		Args:
 			inputs: the input, [batch_size, length, embedding_size]
 			input_lengths: the length of each sentences in the input, [batch_size]
+			embedding_size: the size of the embedding. Must be int, for the Dense layers initialization
 			input_mask: if specified, use this instead of tf.sequence_mask(input_lengths). [batch_size, length]
 			head: the head to split, int
 		Returns:
 			the output [batch_size, length, embedding_size] and attention [batch_size, length, length]
 	"""
-	embedding_size = tf.shape(inputs)[-1]
 	query_layer = tf.layers.Dense(embedding_size, use_bias=False, name=name+"_q")
 	key_layer = tf.layers.Dense(embedding_size, use_bias=False, name=name+"_k")
 	
-	query = _splitHead( query_layer(inputs), head )
-	key = _splitHead( key_layer(inputs), head )
-	value = _splitHead( inputs, head )
+	query = _splitHead( query_layer(inputs), head, embedding_size )
+	key = _splitHead( key_layer(inputs), head, embedding_size )
+	value = _splitHead( inputs, head, embedding_size )
 	# scale query, check https://github.com/tensorflow/models/blob/master/official/transformer/model/attention_layer.py for why
 	# may or may not have a positive effect on the situation
 #	head_size = embedding_size // head
 	logits = tf.matmul(query, key, transpose_b=True)
 	attention = tf.nn.softmax(logits, name=name+"_attention")
-	context = _rejoinHead( tf.matmul(attention, value), head )
+	context = _rejoinHead( tf.matmul(attention, value), head, embedding_size)
 	# rejoin the context alongside the inputs
 	output_layer = tf.layers.Dense(embedding_size, use_bias=False, name=name+"_o")
 	concat_values = tf.concat([inputs, context], axis=2)
-	if(dropout_t):
+	if(dropout_t is not None):
 		# add dropout over the concaternated values
 		concat_values = tf.layers.dropout(concat_values, rate=dropout_t, name=name+"_do")
 	outputs = output_layer(concat_values)
 	return outputs, attention
 
-def sinusoidEncoding(inputs):
+def sinusoidEncoding(inputs, scaling_range=(1.0, 1.0e4)):
 	"""Run the inputs through a cos-sin positional encoding. Used for self-attention
 		Args:
 			inputs: tensor of [batch_size, length, embedding_size]
+			scaling_range: the range for the positional encoding used. Tuple of (float, float)
 		Returns:
 			the sinusoid version of the inputs
 	"""
-	raise NotImplementedError()
+	# unload values
+	length = tf.shape(inputs)[1]
+	hidden_size = tf.shape(inputs)[2]
+	min_scaling, max_scaling = scaling_range
+	# necessary additional vals
+	num_increases = hidden_size // 2
+	increment = tf.log(max_scaling / min_scaling) / tf.to_float(num_increases - 1)
+	# scaling made from this increment
+	# inverse is e^(min_scale + hidden_size_pos*-inc), so the bigger the index, the higher this inverse
+	# must be used to differentiate
+	inverse_base = tf.cast(tf.range(num_increases), dtype=inputs.dtype, name="inv")
+	inverse_scaling = min_scaling * tf.exp(inverse_base * -increment)
+	# position is the position in length
+	position = tf.cast(tf.range(length), dtype=inputs.dtype, name="position")
+	# merge them together, result in [length, hidden_size/2] mask
+	base_time = tf.expand_dims(position, 1) * tf.expand_dims(inverse_scaling, 0)
+	# sinusoid it away to get the fitting mask with size [length, hidden_size]
+	positional_sinusoid = tf.concat([tf.sin(base_time), tf.cos(base_time)], axis=-1, name="sinusoid")
+	# add it directly into the inputs
+	return inputs + tf.expand_dims(positional_sinusoid, 0)
