@@ -78,10 +78,17 @@ def dataToCSV(csv_path, data, check=True):
 				assert checker_id + 1 == int(idx), "Screwed disconnect data! expected {:d}, actually {:d}".format(checker_id+1, int(idx))
 				checker_id += 1
 
-def dataToCrash(crash_path, data):
-	lines = data["lines"]
-	ratings = data["ratings"]
-	data_coupling = zip(lines,  ratings)
+def dataToCrash(crash_path, data, is_full=False):
+	if(not is_full):
+		print("Read splitted version")
+		data = data[0]
+		lines = data["lines"]
+		ratings = data["ratings"]
+		data_coupling = zip(lines,  ratings)
+	else:
+		print("Read unsplitted version")
+		convert_data = lambda line, rat: (line, sorted(rat.items(), key=lambda it: it[0], reverse=True)[0][0])
+		data_coupling = [ convert_data(l, r) for l, r in data]
 	count = 0
 	write_format = "train_{:06d}\n{:s}\n{:d}"
 	with io.open(crash_path, "w", encoding="utf-8") as crash_file:
@@ -98,8 +105,8 @@ def dataToCrash(crash_path, data):
 
 if __name__=="__main__":
 	mode = sys.argv[1]
-	if(mode != "json" and mode != "csv" and "crash" not in mode):
-		print("Mode json to convert json->crash and vice versa")
+	if("json" not in mode and mode != "csv" and "crash" not in mode):
+		print("Mode json/json_full to convert json->crash and vice versa")
 		sys.exit()
 	if("crash" in mode):
 		is_train = "train" in mode
@@ -109,12 +116,12 @@ if __name__=="__main__":
 		data = crashToData(crash_path, train_file=is_train)
 		dataToJSON(json_path, data, train_file=is_train)
 		print("Done conversion, found {:d} sentences".format(len(data)))
-	elif(mode == "json"):
+	elif("json" in mode):
 		print("Converting json to crash formatted")
 		json_path, crash_path =  sys.argv[2:4]
 		with io.open(json_path, "r", encoding="utf-8") as json_file:
-			data = json.load(json_file)[0]
-		dataToCrash(crash_path, data)
+			data = json.load(json_file)
+		dataToCrash(crash_path, data, is_full="full" in mode)
 		print("Done conversion to {:s}".format(crash_path))
 	else:
 		print("Converting json to submittable csv")
