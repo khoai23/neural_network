@@ -297,7 +297,7 @@ if __name__ == "__main__":
 	args.export_dir = os.path.join(args.model_dir, "export")
 	args.cell_size = 128
 	args.epoch = 100
-	args.batch_size = 64
+	args.batch_size = 8
 	args.dropout = 0.8
 	args.shuffle_batch = True
 	args.default_word = "<unk>"
