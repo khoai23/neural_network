@@ -1,4 +1,5 @@
 import tensorflow as tf
+import keras
 import ffBuilder as builder
 import numpy as np
 import os, time, io
@@ -177,8 +178,76 @@ class SentimentModel:
 		return self._epoch_tensor
 
 
+class KerasRNNModel(SentimentModel):
+	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):
+		if(loss_weight is not None):
+			assert isinstance(loss_weight, dict)
+			self._loss_weight = [ float(loss_weight[str(i+1)]) for i in range(5)]
+		else:
+			self._loss_weight = None
+		self._save_path = save_path
+		if(not os.path.exists(save_path)):
+			print("Path not exist: {:s}. Create new.".format(save_path))
+			os.mkdir(save_path)
+		self._export_path = export_path
+		self._batch_size = batch_size
+		self._debug = debug
+		self._shuffle_batch = shuffle_batch
+		self._prev_stat = None
+		self._attention_names = None
 
+	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD"):
+		if(isinstance(table_default_idx, str)):
+			assert table_default_idx not in additional_words
+			additional_words.insert(0, table_default_idx)
+			self._default_idx = 0
+		else:
+			self._default_idx = table_default_idx
+		vocab = self._vocab = {word:idx for idx, word in enumerate(additional_words)}
+		self._model = model = keras.Sequential()
+		model.add(keras.layers.Embedding(len(additional_words), cell_size, input_length=250))
+		model.add(keras.layers.LSTM(128))
+		model.add(keras.layers.Dense(1, activation='sigmoid'))
+		model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+		model.summary()
+		self._session_dictionary = {"session": model, "vocab": vocab}
 
+	def _reformData(self, dataset):
+		features, labels, *_ = zip(*dataset)
+		vocab, default_idx = self._vocab, self._default_idx
+		process_line = lambda line: [ vocab.get(word, default_idx) for word in line.split()]
+		features = np.array([ process_line(line) for line in features ])
+		labels = np.array([ (float(l) - 1.0) / 4.0 for l in labels ])
+		features = keras.preprocessing.sequence.pad_sequences(features, maxlen=250)
+		labels = np.reshape(labels, [-1, 1])
+#		labels = keras.preprocessing.sequence.pad_sequences(labels, maxlen=250)
+		return features, labels
+
+	def trainSession(self, training_dataset, eval_dataset, epoch, dropout=1.0):
+		model = self._model
+		train_features, train_labels = self._reformData(training_dataset)
+#		train_features, train_labels = np.arange(500).reshape([2, 250]), np.array([[0.0], [0.5]])
+		print(train_features.shape, train_labels.shape)
+		eval_compatible_set = self._reformData(eval_dataset)
+		model.fit(train_features, train_labels, validation_data=eval_compatible_set, batch_size=self._batch_size, epochs=epoch, callbacks=[keras.callbacks.ModelCheckpoint(os.path.join(self._save_path, "model.h5"), monitor='val_loss', save_best_only=True)]) 
+
+	def evalSession(self, eval_dataset, detailed=False, alignment_sample=False, file_path=None, external_fn=None):
+		eval_features, eval_labels = self._reformData(eval_dataset)
+		return self._model.evaluate(eval_features, eval_labels, batch_size=self._batch_size)
+
+	def inferSession(self, dataset, external_fn=None):
+		model = self._model
+		return model.predict(dataset, batch_size=self._batch_size, verbose=1)
+
+	def saveSession(self, compare_func, model_idx=None):
+		self._model.save(os.path.join(self._save_path, "model.h5"))
+	
+	def loadSession(self, checkpoint=None):
+		if(os.path.isfile(os.path.join(self._save_path, "model.h5"))):
+			print("Found model in path, overriding..")
+			del self._model
+			self._model = keras.models.load_model()
+			self._model.summary()
 
 class SentimentCNNPooledModel(SentimentModel):
 	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):

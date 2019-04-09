@@ -202,7 +202,7 @@ def constructParser():
 	parser = argparse.ArgumentParser(description='A rewrite of sentiment analysis.')
 	# VITAL, used for all phases
 	parser.add_argument('-m','--mode', type=str, default='default', choices=["default", "data_process", "train", "infer", "tune", "eval", "export", "debug"], help='Mode of the parser. Default all (default)')
-	parser.add_argument('--model_structure', type=str, default='attention', choices=["attention", "attention_extended", "attention_extended_v2", "attention_multimodal", "sum", "self_attention"], help='The model structure to be used in sentiment model. Default attention')
+	parser.add_argument('--model_structure', type=str, default='attention', choices=["keras", "attention", "attention_extended", "attention_extended_v2", "attention_multimodal", "sum", "self_attention"], help='The model structure to be used in sentiment model. Default attention')
 	parser.add_argument('--model_dir', type=str, default="./", help='Location of files to train, default ./')
 	parser.add_argument('--debug', action="store_true", help='Use to enable debug information')
 	parser.add_argument('--gpu_disable_allow_growth', action="store_true", help='Use to disable gpu_allow_growth')
@@ -260,7 +260,10 @@ def createModel(args, dataset):
 	else:
 		weighted_loss = None
 
-	if(args.model_structure == "attention"):
+	if(args.model_structure == "keras"):
+		model = model_lib.KerasRNNModel(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
+		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
+	elif(args.model_structure == "attention"):
 		model = model_lib.SentimentRNNAttention(args.save_file, args.export_dir, batch_size=args.batch_size, debug=args.debug, shuffle_batch=args.shuffle_batch, loss_weight=weighted_loss)
 		model.buildSession(words, embeddings, default_word_idx, cell_size=args.cell_size, additional_words=additional_words, gpu_allow_growth=not args.gpu_disable_allow_growth, optimizer=args.optimizer)
 	elif(args.model_structure == "attention_extended"):
@@ -329,8 +332,9 @@ if __name__ == "__main__":
 			sys.exit(0)
 
 	sentiment_model = createModel(args, dataset)
-	session = sentiment_model._session_dictionary["session"]
-	session.run([tf.global_variables_initializer(), tf.tables_initializer()])
+	if("keras" not in args.model_structure):
+		session = sentiment_model._session_dictionary["session"]
+		session.run([tf.global_variables_initializer(), tf.tables_initializer()])
 	sentiment_model.loadSession()
 
 	print("Build and attempt load session done.")
