@@ -82,12 +82,12 @@ def dataToCrash(crash_path, data, is_full=False):
 	if(not is_full):
 		print("Read splitted version")
 		data = data[0]
-		lines = data["lines"]
+		lines = ("\"{}\"".format(line) for line in data["lines"])
 		ratings = data["ratings"]
 		data_coupling = zip(lines,  ratings)
 	else:
 		print("Read unsplitted version")
-		convert_data = lambda line, rat: (line, sorted(rat.items(), key=lambda it: it[0], reverse=True)[0][0])
+		convert_data = lambda line, rat: ("\"{}\"".format(line), sorted(rat.items(), key=lambda it: it[0], reverse=True)[0][0])
 		data_coupling = [ convert_data(l, r) for l, r in data]
 	count = 0
 	write_format = "train_{:06d}\n{:s}\n{:d}"
