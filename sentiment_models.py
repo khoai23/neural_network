@@ -195,6 +195,7 @@ class KerasRNNModel(SentimentModel):
 		self._shuffle_batch = shuffle_batch
 		self._prev_stat = None
 		self._attention_names = None
+		self._max_sequence_length = 100
 
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD"):
 		if(isinstance(table_default_idx, str)):
@@ -203,9 +204,9 @@ class KerasRNNModel(SentimentModel):
 			self._default_idx = 0
 		else:
 			self._default_idx = table_default_idx
-		vocab = self._vocab = {word:idx for idx, word in enumerate(additional_words)}
+		self._vocab = vocab = {word:idx for idx, word in enumerate(additional_words)}
 		self._model = model = keras.Sequential()
-		model.add(keras.layers.Embedding(len(additional_words), cell_size, input_length=250))
+		model.add(keras.layers.Embedding(len(additional_words), cell_size, input_length=self._max_sequence_length))
 		model.add(keras.layers.LSTM(128))
 		model.add(keras.layers.Dense(1, activation='sigmoid'))
 		model.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
@@ -218,10 +219,11 @@ class KerasRNNModel(SentimentModel):
 		process_line = lambda line: [ vocab.get(word, default_idx) for word in line.split()]
 		features = np.array([ process_line(line) for line in features ])
 		labels = np.array([ (float(l) - 1.0) / 4.0 for l in labels ])
-		features = keras.preprocessing.sequence.pad_sequences(features, maxlen=250)
+		features = keras.preprocessing.sequence.pad_sequences(features, maxlen=self._max_sequence_length)
 		labels = np.reshape(labels, [-1, 1])
 #		labels = keras.preprocessing.sequence.pad_sequences(labels, maxlen=250)
 		return features, labels
+
 
 	def trainSession(self, training_dataset, eval_dataset, epoch, dropout=1.0):
 		model = self._model
@@ -233,7 +235,9 @@ class KerasRNNModel(SentimentModel):
 
 	def evalSession(self, eval_dataset, detailed=False, alignment_sample=False, file_path=None, external_fn=None):
 		eval_features, eval_labels = self._reformData(eval_dataset)
-		return self._model.evaluate(eval_features, eval_labels, batch_size=self._batch_size)
+		eval_loss, eval_acc = self._model.evaluate(eval_features, eval_labels, batch_size=self._batch_size)
+		print("Eval: loss {:.4f}, accuracy {:.2f}%".format(eval_loss, eval_acc * 100.0))
+		return eval_loss, eval_acc
 
 	def inferSession(self, dataset, external_fn=None):
 		model = self._model
@@ -246,8 +250,47 @@ class KerasRNNModel(SentimentModel):
 		if(os.path.isfile(os.path.join(self._save_path, "model.h5"))):
 			print("Found model in path, overriding..")
 			del self._model
-			self._model = keras.models.load_model()
+			self._model = keras.models.load_model(os.path.join(self._save_path, "model.h5"))
 			self._model.summary()
+
+class KerasVDCNNModel(KerasRNNModel):
+	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD", convolution_size=128, additive=False):
+		if(isinstance(table_default_idx, str)):
+			assert table_default_idx not in additional_words
+			additional_words.insert(0, table_default_idx)
+			self._default_idx = 0
+		else:
+			self._default_idx = table_default_idx
+		self._vocab = vocab = {word:idx for idx, word in enumerate(additional_words)}
+		model_input = keras.layers.Input(shape=(100, ), dtype='int32')
+		embedded = keras.layers.Embedding(len(additional_words), cell_size, input_length=self._max_sequence_length) (model_input)
+		if(additive):
+			embedded = keras.layers.Dropout(0.5) ( keras.layers.AdditiveLayer() (embedded) )
+		# first convolution layer, 
+		conv_ops = []
+		for filter_size in range(2, 5):
+			conv = keras.layers.Conv1D(convolution_size, filter_size, activation='relu') (embedded)
+			pooling = keras.layers.MaxPool1D(5) (conv)
+			conv_ops.append(pooling)
+		all_conv_filter = keras.layers.Concatenate(axis=1) (conv_ops)
+		conv_1 = keras.layers.BatchNormalization() (all_conv_filter)
+		# second convolution layer, apply atop conv_1 and have the same size
+		conv_2 = keras.layers.BatchNormalization() ( keras.layers.Conv1D(convolution_size, 5, padding="same") (conv_1))
+		conv_2 = keras.layers.BatchNormalization() ( keras.layers.Conv1D(convolution_size, 5, padding="same") (conv_2))
+		conv_2 = keras.layers.MaxPool1D() ( keras.layers.Add() ([conv_1, conv_2] ) )
+		# third convolution layer, same as conv_2
+		conv_3 = keras.layers.BatchNormalization() ( keras.layers.Conv1D(convolution_size, 5, padding="same") (conv_2))
+		conv_3 = keras.layers.BatchNormalization() ( keras.layers.Conv1D(convolution_size, 5, padding="same") (conv_3))
+		conv_3 = keras.layers.MaxPool1D() ( keras.layers.Add() ([conv_2, conv_3] ) )
+		
+		features_sparse = keras.layers.Flatten() (conv_3)
+		features_dense = keras.layers.Dense(64, activation='relu') (features_sparse)
+		features_dense = keras.layers.BatchNormalization() (features_dense)
+		model_output = keras.layers.Dense(1, activation='softmax') (features_dense)
+		self._model = model = keras.Model(inputs=model_input, outputs=model_output)
+		model.compile(loss = 'binary_crossentropy', optimizer = optimizer, metrics = ['accuracy'])
+		model.summary()
+		self._session_dictionary = {"session": model, "vocab": vocab}
 
 class SentimentCNNPooledModel(SentimentModel):
 	def __init__(self, save_path, export_path, batch_size=128, debug=False, shuffle_batch=True, loss_weight=None):
