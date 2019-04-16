@@ -214,14 +214,16 @@ class KerasRNNModel(SentimentModel):
 		self._session_dictionary = {"session": model, "vocab": vocab}
 
 	def _reformData(self, dataset):
-		features, labels, *_ = zip(*dataset)
+		# remove the certainty and all neutral values
+		features, labels, *_ = zip(* ((f, l) for f, l in dataset if int(l) != 3))
 		vocab, default_idx = self._vocab, self._default_idx
 		process_line = lambda line: [ vocab.get(word, default_idx) for word in line.split()]
 		features = np.array([ process_line(line) for line in features ])
-		labels = np.array([ (float(l) - 1.0) / 4.0 for l in labels ])
+		# 0 for neg, 1 for pos, already without neutral
+		labels = np.array([ int(int(l) > 3) for l in labels ])
+		# pad the sentences and unlock the labels
 		features = keras.preprocessing.sequence.pad_sequences(features, maxlen=self._max_sequence_length)
 		labels = np.reshape(labels, [-1, 1])
-#		labels = keras.preprocessing.sequence.pad_sequences(labels, maxlen=250)
 		return features, labels
 
 
@@ -253,6 +255,9 @@ class KerasRNNModel(SentimentModel):
 			self._model = keras.models.load_model(os.path.join(self._save_path, "model.h5"))
 			self._model.summary()
 
+	def tune(self, dataset, **kwargs):
+		print("Currently tuning is disabled on all Keras models")
+
 class KerasVDCNNModel(KerasRNNModel):
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, additional_words=None, gpu_allow_growth=True, optimizer="SGD", convolution_size=128, additive=False):
 		if(isinstance(table_default_idx, str)):
@@ -268,7 +273,7 @@ class KerasVDCNNModel(KerasRNNModel):
 			embedded = keras.layers.Dropout(0.5) ( keras.layers.AdditiveLayer() (embedded) )
 		# first convolution layer, 
 		conv_ops = []
-		for filter_size in range(2, 5):
+		for filter_size in range(2, 6):
 			conv = keras.layers.Conv1D(convolution_size, filter_size, activation='relu') (embedded)
 			pooling = keras.layers.MaxPool1D(5) (conv)
 			conv_ops.append(pooling)
