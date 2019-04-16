@@ -9,7 +9,7 @@ import sentiment_models as model_lib
 from sentiment_data import loadAndProcessDataset, generate_tranform_dict, custom_vi_cleaner, NumpySupportedEncoder, _loadJSONConfig
 from sentiment_dictionary import tryApplyDictionaryToPredictions, loadDictionary
 # constant for the moment
-MODEL_DEFAULT_LOCATION = "/home/quan/Workspace/Data/model/espresso/default"
+MODEL_DEFAULT_LOCATION = "./model/default"
 EMB_DEFAULT_LOCATION = "/home/quan/Workspace/Data/espresso/vi_trimmed_embedding.txt"
 MONOLINGUAL_FILE_LOCATION = "/home/quan/Workspace/Data/monolingual/vi_mono.txt"
 
@@ -203,7 +203,7 @@ def constructParser():
 	# VITAL, used for all phases
 	parser.add_argument('-m','--mode', type=str, default='default', choices=["default", "data_process", "train", "infer", "tune", "eval", "export", "debug"], help='Mode of the parser. Default all (default)')
 	parser.add_argument('--model_structure', type=str, default='attention', choices=["keras", "keras_vdcnn", "attention", "attention_extended", "attention_extended_v2", "attention_multimodal", "sum", "self_attention"], help='The model structure to be used in sentiment model. Default attention')
-	parser.add_argument('--model_dir', type=str, default="./", help='Location of files to train, default ./')
+	parser.add_argument('--model_dir', type=str, default=None, help='Location of files to train, default ./model/default')
 	parser.add_argument('--debug', action="store_true", help='Use to enable debug information')
 	parser.add_argument('--gpu_disable_allow_growth', action="store_true", help='Use to disable gpu_allow_growth')
 	# DATA, data_process phase, can be ignored after first run through

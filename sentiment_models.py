@@ -264,11 +264,17 @@ class KerasVDCNNModel(KerasRNNModel):
 			assert table_default_idx not in additional_words
 			additional_words.insert(0, table_default_idx)
 			self._default_idx = 0
+			# create the randomly generated & trainable embedding using the additional_words
+			embedding = keras.layers.Embedding(len(additional_words), cell_size, input_length=self._max_sequence_length)
 		else:
+			print("Additional words are currently disabled in keras models")
 			self._default_idx = table_default_idx
+			vector_size = table_vectors.shape[-1]
+			# create the constant, untranable embedding using the fed vectors
+			embedding = keras.layers.Embedding(len(table_words), vector_size, embeddings_initializer=keras.initializers.Constant(table_vectors), input_length=self._max_sequence_length, trainable=False )
 		self._vocab = vocab = {word:idx for idx, word in enumerate(additional_words)}
 		model_input = keras.layers.Input(shape=(100, ), dtype='int32')
-		embedded = keras.layers.Embedding(len(additional_words), cell_size, input_length=self._max_sequence_length) (model_input)
+		embedded = embedding (model_input)
 		if(additive):
 			embedded = keras.layers.Dropout(0.5) ( keras.layers.AdditiveLayer() (embedded) )
 		# first convolution layer, 
