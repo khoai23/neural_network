@@ -740,6 +740,7 @@ class SentimentSelfAttention(SentimentRNNAttention):
 		self._shuffle_batch = shuffle_batch
 		self._clear_word = "<cls>"
 		self._loss_weight = None
+		self._prev_stat = None
 
 	def buildSession(self, table_words, table_vectors, table_default_idx, cell_size=512, depth=4, head=4, additional_words=None, gpu_allow_growth=True, optimizer="SGD"):
 		# initialize the session
