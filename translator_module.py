@@ -18,9 +18,9 @@ def _simple_processing_dataset(dataset):
 	dataset = dataset.map( lambda features, labels: (tf.string_split([features]), tf.string_split([labels])) )
 	add_length = lambda item: (item, tf.size(item))
 	dataset = dataset.map( lambda features, labels: (add_length(features), add_length(labels)) )
-	# force to dense and squeeze the first (empty) dimension to allow batching in later stages
+	# force to dense and squeeze the first (empty) dimension to allow batching in later stages. use spare_to_dense for compatibility with 1.7
 	# the <pad> token is never used. TODO check if there exist padded values
-	force_to_dense = lambda item: (tf.squeeze(tf.sparse.to_dense(item[0], default_value="<pad>"), axis=[0]), item[1])
+	force_to_dense = lambda item: (tf.squeeze(tf.sparse_to_dense(item[0].indices, item[0].dense_shape, item[0].values, default_value="<pad>"), axis=[0]), item[1])
 	dataset = dataset.map( lambda features, labels: (force_to_dense(features), force_to_dense(labels)) )
 	return dataset
 
@@ -93,8 +93,10 @@ class DefaultSeq2Seq:
 		# shuffle and repeat to allow rotating call
 		if(mode == tf.estimator.ModeKeys.TRAIN):
 			tf.logging.debug("In mode train, will repeat coupled dataset indefinitely")
-			shuffle_fn = tf.data.experimental.shuffle_and_repeat(batch_size * 16)
-			data_prepared = data_prepared.apply(shuffle_fn)
+#			shuffle_fn = tf.data.experimental.shuffle_and_repeat(batch_size * 16)
+#			data_prepared = data_prepared.apply(shuffle_fn)
+			data_prepared = data_prepared.repeat()
+			data_prepared = data_prepared.shuffle(batch_size * 16)
 		else:
 			tf.logging.debug("In mode eval, only read the dataset once")
 		iterator = data_prepared.make_initializable_iterator()
@@ -255,8 +257,9 @@ class DefaultSeq2Seq:
 		"""
 		hooks = []
 		if(mode == tf.estimator.ModeKeys.TRAIN):
-			step_hook = tf.estimator.StepCounterHook(every_n_steps=5)
-			hooks.append( step_hook )
-			logging_hook = tf.estimator.LoggingTensorHook({"per_sentence_loss": "loss"}, every_n_iter=5)
-			hooks.append( logging_hook )
+			pass
+#			step_hook = tf.estimator.StepCounterHook(every_n_steps=5)
+#			hooks.append( step_hook )
+#			logging_hook = tf.estimator.LoggingTensorHook({"per_sentence_loss": "loss"}, every_n_iter=5)
+#			hooks.append( logging_hook )
 		return hooks

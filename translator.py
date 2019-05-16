@@ -2,7 +2,6 @@ import argparse, io, json, os
 from translator_module import DefaultSeq2Seq
 import tensorflow as tf
 
-model_position = "/home/quan/Workspace/Data/model/translator/test_run"
 max_steps = 50000
 
 with io.open("translator_config.json", "r", encoding="utf-8") as config_file:
@@ -25,6 +24,7 @@ if __name__ == "__main__":
 	train_location_vi = data_config["train_location_vi"]
 	eval_location_en = data_config["eval_location_en"]
 	eval_location_vi = data_config["eval_location_vi"]
+	model_position = data_config["model_location"]
 	# start running
 	print("Running mode {}".format(args.mode))
 	translation_model = DefaultSeq2Seq(num_units=128, vocab_files=(vocab_location_en, vocab_location_vi), model_dir=model_position)

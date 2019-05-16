@@ -50,6 +50,8 @@ def batchAndPad(dataset, batch_size, src_padding_idx=None, tgt_padding_idx=None)
 			batched.append(addPadding(current_batch, src_padding_idx, tgt_padding_idx))
 			current_batch = []
 		current_batch.append(item)
+		if(item[2] == 0 or item[3] == 0):
+			print("Detected problem with item: {}".format(item))
 	if(len(current_batch) > 0):
 		# collect last item if available
 		batched.append(addPadding(current_batch, src_padding_idx, tgt_padding_idx))
@@ -197,7 +199,7 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='Run RNN.')
 	parser.add_argument('-m', '--mode', choices=["train", "infer", "eval", "export"], help="Mode of the program")
 	args = parser.parse_args()
-	args.run_dir = "/home/quan/Workspace/Data/iwslt15"
+	args.run_dir = "./data/iwslt_en_vi"
 	args.file_name = "tst2012"
 	args.src = "en"
 	args.tgt = "vi"
@@ -218,7 +220,7 @@ if __name__ == "__main__":
 	tgt_word_to_id = session_data["tgt_word_to_id"]
 	
 	if(args.mode == "train"):
-		filter_fn = lambda x: 0 < len(x[0].strip().split()) <= 50 and 0 < len(x[1].strip().split()) <= 50
+		filter_fn = lambda x: 0 < len(x[0].strip().split()) <= 50 and 0 < len(x[1].strip().split()) <= 50 
 		dump_file = os.path.join(args.run_dir, "train.batch")
 		if(not os.path.isfile(dump_file) or args.manual_load_train_data):
 			print("Create data in training...")
@@ -256,11 +258,12 @@ if __name__ == "__main__":
 		# run infer on batched data
 		timer = time.time()
 		print("Start inference process, with dataset size {:d} of {:d} sentences each".format(len(batched_dataset), args.batch_size))
-		for batch in batched_dataset:
+		for i, batch in enumerate(batched_dataset):
 			batch_predictions, batch_predictions_length = inferSession(session_data, batch)
 			all_predictions.extend(batch_predictions)
 			all_predictions_length.extend(batch_predictions_length)
-		print("Inference finished, time passed {:.2f}s".format(time.time() - timer))
+			print("Inference iteration {:d} finished, time passed {:.2f}s".format(i, time.time() - timer))
+		print("Inference finished, total time passed {:.2f}s".format(time.time() - timer))
 #		print("First sample: {} - {}".format(all_predictions[0], all_predictions_length[0]))
 		# reorder and trim sentences
 		timer = time.time()
