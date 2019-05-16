@@ -59,7 +59,7 @@ class DefaultSeq2Seq:
 			input_length = tf.reduce_max(input_length_dense, axis=1) + 1
 		return input_placeholder, input_tokenized_dense, input_length
 
-	def build_batch_dataset_tensor(self, dataset_files):
+	def build_batch_dataset_tensor(self, dataset_files, mode=tf.estimator.ModeKeys.TRAIN):
 		"""Build an input using a combined dataset
 		Args:
 			dataset_files: a tuple of (src_data_file, tgt_data_file)
@@ -91,8 +91,12 @@ class DefaultSeq2Seq:
 		# sort the dataset (of a sort, using group_by_window on a bucket size)
 		data_prepared = data_prepared.apply(tf.contrib.data.group_by_window(key_func=lambda features, labels: tf.cast(labels[1] // window_size, dtype=tf.int64), reduce_func=padding_fn, window_size=batch_size))
 		# shuffle and repeat to allow rotating call
-		shuffle_fn = tf.data.experimental.shuffle_and_repeat(batch_size * 16)
-		data_prepared = data_prepared.apply(shuffle_fn)
+		if(mode == tf.estimator.ModeKeys.TRAIN):
+			tf.logging.debug("In mode train, will repeat coupled dataset indefinitely")
+			shuffle_fn = tf.data.experimental.shuffle_and_repeat(batch_size * 16)
+			data_prepared = data_prepared.apply(shuffle_fn)
+		else:
+			tf.logging.debug("In mode eval, only read the dataset once")
 		iterator = data_prepared.make_initializable_iterator()
 		# add to table initialization
 		tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, iterator.initializer)

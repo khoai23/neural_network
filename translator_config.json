@@ -1,0 +1,13 @@
+{
+	"local": {
+		"train_location_en":"/home/quan/Workspace/Data/iwslt15/train.filter.en",
+		"train_location_vi":"/home/quan/Workspace/Data/iwslt15/train.filter.vi",
+		"eval_location_en":"/home/quan/Workspace/Data/iwslt15/tst2012.en",
+		"eval_location_vi":"/home/quan/Workspace/Data/iwslt15/tst2012.vi",
+		"vocab_location_en":"/home/quan/Workspace/Data/iwslt15/vocab.en",
+		"vocab_location_vi":"/home/quan/Workspace/Data/iwslt15/vocab.vi"
+	},
+	"placeholder": {
+	
+	}
+}
