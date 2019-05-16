@@ -183,7 +183,7 @@ class DefaultSeq2Seq:
 				decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(decoder)
 				prediction_ids = decoder_output.sample_id
 				prediction_tokens = lookup_table_dict["tgt_reverse_table"].lookup(prediction_ids)
-				predictions = (prediction_ids, prediction_tokens, None)
+				predictions = (prediction_ids, prediction_tokens, decoder_length)
 			else:
 				predictions = None
 
@@ -263,3 +263,16 @@ class DefaultSeq2Seq:
 #			logging_hook = tf.estimator.LoggingTensorHook({"per_sentence_loss": "loss"}, every_n_iter=5)
 #			hooks.append( logging_hook )
 		return hooks
+
+	def format_prediction(self, predictions, stream):
+		"""Push the prediction tokens into proper string stream
+		Args:
+			predictions: the values gotten from estimator.predict, in form of (tokens, ids, length)
+			stream: the string stream for the values to print into
+		Returns:
+			the satisfied stream
+		"""
+		for tokens, _, length in zip(*predictions):
+			sentence = " ".join(tokens[:length]) + "\n"
+			stream.write(sentence)
+		return stream
