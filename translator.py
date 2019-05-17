@@ -1,5 +1,5 @@
-import argparse, io, json, os
-from translator_module import DefaultSeq2Seq
+import argparse, io, json, os, sys
+from translator_module import DefaultSeq2Seq, check_blank_lines
 import tensorflow as tf
 
 max_steps = 50000
@@ -29,19 +29,29 @@ if __name__ == "__main__":
 	print("Running mode {}".format(args.mode))
 	translation_model = DefaultSeq2Seq(num_units=128, vocab_files=(vocab_location_en, vocab_location_vi), model_dir=model_position)
 	# set the verbosity
-	translation_model.verbosity(tf.logging.INFO)
+	translation_model.verbosity(tf.logging.DEBUG)
 	if(args.mode == "train"):
 		mode = tf.estimator.ModeKeys.TRAIN
 		train_input_fn = lambda: translation_model.build_batch_dataset_tensor( (train_location_en, train_location_vi), mode=mode )
 		train_hooks = translation_model.model_hook(mode)
 		translation_model.estimator.train(input_fn=train_input_fn, hooks=train_hooks, max_steps=max_steps)
 		print("Training completed")
-	if(args.mode == "eval"):
+	elif(args.mode == "eval"):
 		mode = tf.estimator.ModeKeys.EVAL
-		train_input_fn = lambda: translation_model.build_batch_dataset_tensor( (eval_location_en, eval_location_vi), mode=mode )
-		train_hooks = translation_model.model_hook(mode)
-		translation_model.estimator.evaluate(input_fn=train_input_fn, hooks=train_hooks, max_steps=max_steps)
+		# check eval files
+		_ = check_blank_lines(eval_location_en), check_blank_lines(eval_location_vi)
+		eval_input_fn = lambda: translation_model.build_batch_dataset_tensor( (eval_location_en, eval_location_vi), mode=mode )
+		eval_hooks = translation_model.model_hook(mode, eval_metric="bleu", eval_reference_file=eval_location_vi)
+		translation_model.estimator.evaluate(input_fn=eval_input_fn, hooks=eval_hooks)
 		print("Eval completed")
+	elif(args.mode == "infer"):
+		mode = tf.estimator.ModeKeys.PREDICT
+		predict_input_fn = lambda: translation_model.build_infer_dataset_tensor( eval_location_en )
+		predictions = translation_model.estimator.predict(input_fn=predict_input_fn)
+		for pred in predictions:
+			# format into acceptable tuple
+			prediction = (pred["tokens"], pred["ids"], pred["length"])
+			translation_model.format_prediction(prediction, sys.stdout)
 	else:
 		raise NotImplementedError()
 

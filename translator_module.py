@@ -1,5 +1,6 @@
 import tensorflow as tf
 import io
+import translator_hooks
 
 UNK_ID, UNK_TOKEN = 0, "<unk>"
 SOS_ID, SOS_TOKEN = 1, "<s>"
@@ -13,6 +14,12 @@ def _check_vocab_file(file_path):
 		assert lines[EOS_ID].strip() == EOS_TOKEN, lines[EOS_ID]
 		return len(lines)
 
+def check_blank_lines(file_path):
+	tf.logging.debug("Check if file {:s} containing blank".format(file_path))
+	with io.open(file_path, "r", encoding="utf-8") as check_file:
+		for idx, line in enumerate(check_file.readlines()):
+			assert line.strip() != "", "Evaluation files must NOT contain blank line; but line {:d} is blank".format(idx)
+
 def _simple_processing_dataset(dataset):
 	# string_split do not work on singular string, so make a 1-d string out of it. squeeze later
 	dataset = dataset.map( lambda features, labels: (tf.string_split([features]), tf.string_split([labels])) )
@@ -20,7 +27,7 @@ def _simple_processing_dataset(dataset):
 	dataset = dataset.map( lambda features, labels: (add_length(features), add_length(labels)) )
 	# force to dense and squeeze the first (empty) dimension to allow batching in later stages. use spare_to_dense for compatibility with 1.7
 	# the <pad> token is never used. TODO check if there exist padded values
-	force_to_dense = lambda item: (tf.squeeze(tf.sparse_to_dense(item[0].indices, item[0].dense_shape, item[0].values, default_value="<pad>"), axis=[0]), item[1])
+	force_to_dense = lambda item: (tf.squeeze(tf.sparse_tensor_to_dense(item[0], default_value="<pad>"), axis=[0]), item[1])
 	dataset = dataset.map( lambda features, labels: (force_to_dense(features), force_to_dense(labels)) )
 	return dataset
 
@@ -59,6 +66,33 @@ class DefaultSeq2Seq:
 			input_length = tf.reduce_max(input_length_dense, axis=1) + 1
 		return input_placeholder, input_tokenized_dense, input_length
 
+	def build_infer_dataset_tensor(self, infer_file):
+		"""Build an input with only features for prediction
+		Args:
+			infer_file: the file to deal with the inference
+		Returns:
+			the iterator containing batched data
+		"""
+		batch_size = self._params.get("batch_size", 128)
+		
+		infer_dataset = tf.data.TextLineDataset(infer_file)
+		# split string, convert to dense and drop useless first dim
+		infer_dataset = infer_dataset.map( lambda item: tf.string_split([item]) )
+		infer_dataset = infer_dataset.map( lambda item: tf.squeeze(tf.sparse_tensor_to_dense(item, default_value="<pad>"), axis=[0]) )
+		# add the length of the tokens
+		infer_dataset = infer_dataset.map( lambda item: (item, tf.size(item)))
+		# batch and pad, do not change positions
+		expected_shape = (tf.TensorShape([None]), tf.TensorShape([]))
+		expected_filler = (EOS_TOKEN, 0)
+		padding_fn = lambda dataset: dataset.padded_batch(batch_size, expected_shape, padding_values=expected_filler)
+		infer_dataset = infer_dataset.apply( padding_fn )
+		# apparently it still need to conform to the input_fn
+		infer_dataset = tf.data.Dataset.zip( (infer_dataset, infer_dataset) )
+		# throw
+		iterator = infer_dataset.make_initializable_iterator()
+		tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, iterator.initializer)
+		return infer_dataset
+
 	def build_batch_dataset_tensor(self, dataset_files, mode=tf.estimator.ModeKeys.TRAIN):
 		"""Build an input using a combined dataset
 		Args:
@@ -79,26 +113,30 @@ class DefaultSeq2Seq:
 		tgt_dataset = tf.data.TextLineDataset(tgt_data_file)
 		# zip together
 		data_prepared = tf.data.Dataset.zip( (src_dataset, tgt_dataset) )
-		# turn `string` into `(length, tokens)`
+		# turn `string` into `(tokens, lengths)`
 		data_prepared = _simple_processing_dataset(data_prepared)
-		valid_length = lambda item: tf.logical_and(item <= maximum_sentence_length, item > 0)
-		data_prepared = data_prepared.filter( lambda features, labels: tf.logical_and(valid_length(features[1]), valid_length(labels[1])) )
-		# create a padding function to faciliate the bucket
+		# the shape and padding to faciliate the bucket/batch process
 		expected_inner_padded_shapes = tuple( [tf.TensorShape([None]), tf.TensorShape([])] )
 		expected_padded_shapes = (expected_inner_padded_shapes, expected_inner_padded_shapes)
 		expected_padded_values = ((EOS_TOKEN, 0), (EOS_TOKEN, 0))
-		padding_fn = lambda key, dataset: dataset.padded_batch(batch_size, padded_shapes=expected_padded_shapes, padding_values= expected_padded_values)
-		# sort the dataset (of a sort, using group_by_window on a bucket size)
-		data_prepared = data_prepared.apply(tf.contrib.data.group_by_window(key_func=lambda features, labels: tf.cast(labels[1] // window_size, dtype=tf.int64), reduce_func=padding_fn, window_size=batch_size))
-		# shuffle and repeat to allow rotating call
+
 		if(mode == tf.estimator.ModeKeys.TRAIN):
-			tf.logging.debug("In mode train, will repeat coupled dataset indefinitely")
-#			shuffle_fn = tf.data.experimental.shuffle_and_repeat(batch_size * 16)
-#			data_prepared = data_prepared.apply(shuffle_fn)
+			tf.logging.debug("In mode train, will repeat and shuffle indefinitely, with dataset inside buckets and remove all sentences outside of expected range")
+			# filter all outside expected range
+			valid_length = lambda item: tf.logical_and(item <= maximum_sentence_length, item > 0)
+			data_prepared = data_prepared.filter( lambda features, labels: tf.logical_and(valid_length(features[1]), valid_length(labels[1])) )
+			# the padding function is piece of group_by_window, so need key
+			padding_fn = lambda key, dataset: dataset.padded_batch(batch_size, padded_shapes=expected_padded_shapes, padding_values= expected_padded_values)
+			# sort the dataset (of a sort, using group_by_window on a bucket size)
+			data_prepared = data_prepared.apply(tf.contrib.data.group_by_window(key_func=lambda features, labels: tf.cast(labels[1] // window_size, dtype=tf.int64), reduce_func=padding_fn, window_size=batch_size))
+			# repeat and shuffle 
 			data_prepared = data_prepared.repeat()
 			data_prepared = data_prepared.shuffle(batch_size * 16)
 		else:
-			tf.logging.debug("In mode eval, only read the dataset once")
+			tf.logging.debug("In mode eval, only read the dataset once, with no grouping by length (but still dropping)")
+			# the padding function is used directly, so it only need dataset
+			padding_fn = lambda dataset: dataset.padded_batch(batch_size, padded_shapes=expected_padded_shapes, padding_values= expected_padded_values)
+			data_prepared = data_prepared.apply(padding_fn)
 		iterator = data_prepared.make_initializable_iterator()
 		# add to table initialization
 		tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, iterator.initializer)
@@ -124,6 +162,7 @@ class DefaultSeq2Seq:
 			lookup_table_dict: the result of build_vocab
 			mode
 		"""
+		tf.logging.debug("Features tensor fed into build_model: {}".format(features))
 		features_tokens, features_length = features
 		batch_size = tf.shape(features_length)[0]
 
@@ -156,8 +195,9 @@ class DefaultSeq2Seq:
 			projection_layer = tf.layers.Dense(self.tgt_vocab_size, name="projection_layer")
 
 			# building the decoder for training/eval for loss
-			if(labels is not None):
+			if(mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL):
 				tf.logging.debug("Creating logits for TRAIN/EVAL")
+				tf.logging.debug("Labels tensor fed into build_model: {}".format(labels))
 				label_tokens, label_length = labels
 				label_ids = lookup_table_dict["tgt_lookup_table"].lookup(label_tokens)
 				# pad the label_ids into <s> w1 w2 ... for the input of the training helper
@@ -175,28 +215,33 @@ class DefaultSeq2Seq:
 				logits = None
 
 			# building the decoder for eval/infer for prediction
-			if(not tf.estimator.ModeKeys.TRAIN or labels is None):
-				tf.logging.debug("Creating predictions for EVAL/PREDICt")
+			if(mode == tf.estimator.ModeKeys.EVAL or mode == tf.estimator.ModeKeys.PREDICT):
+				tf.logging.debug("Creating predictions for EVAL/PREDICT")
 				start_ids = tf.fill(tf.shape(features_length), SOS_ID, name="decode_start_ids")
 				greedy_helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(tgt_embedding, start_ids, EOS_ID)
-				decoder =  tf.contrib.seq2seq.BasicDecoder(decoder_cell_with_attention, greedy_helper, encoder_state, output_layer=projection_layer)
+				decoder =  tf.contrib.seq2seq.BasicDecoder(decoder_cell_with_attention, greedy_helper, decoder_initial_state, output_layer=projection_layer)
 				decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(decoder)
-				prediction_ids = decoder_output.sample_id
+				prediction_ids = tf.cast(decoder_output.sample_id, features_ids.dtype)
 				prediction_tokens = lookup_table_dict["tgt_reverse_table"].lookup(prediction_ids)
-				predictions = (prediction_ids, prediction_tokens, decoder_length)
+				# predictions must be a dict. Bummer
+				predictions = {
+						"ids":prediction_ids, 
+						"tokens":prediction_tokens, 
+						"length":decoder_length
+				}
 			else:
 				predictions = None
 
 		return logits, predictions
 
-	def compute_loss(self, logits, labels, lookup_table_dict):
-		"""Create an optimizer out of the logits and labels from the seq2seq structure
+	def compute_loss(self, logits, labels, lookup_table_dict, mode=tf.estimator.ModeKeys.TRAIN):
+		"""Create a loss out of the logits and labels from the seq2seq structure
 		Args:
 			logits: the projected logits representing the model's prediction
 			labels: the value representing the correct ids that the model should create and the correct length of each prediction
 			lookup_table_dict: the lookup dictionary needed
 		Returns:
-			A loss and a train_op using these
+			A loss as first argument and a train_op if mode is TRAIN
 		"""
 		# the labels must be padded at the back with an extra eos id
 		label_tokens, label_length = labels
@@ -220,10 +265,6 @@ class DefaultSeq2Seq:
 		train_op = tf.contrib.layers.optimize_loss(loss=optimizer_loss, global_step=global_step, learning_rate=1.0, optimizer="SGD", clip_gradients=5.0, name="train_op")
 		return optimizer_loss, train_op
 
-	def create_initializer(self):
-		
-		return 
-
 	def model_fn(self, features, labels, mode=tf.estimator.ModeKeys.TRAIN, params=None, config=None):
 		"""A model_fn that satisfies the requirement from the estimator
 		Args:
@@ -238,17 +279,29 @@ class DefaultSeq2Seq:
 		with tf.variable_scope("seq2seq", initializer=tf.initializers.random_uniform(minval=-0.1, maxval=0.1, dtype=self.dtype)):
 			lookup_table_dict = self.build_vocab()
 			logits, predictions = self.build_model(features, labels, lookup_table_dict, mode)
-			if(mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL):
-				loss, train_op = self.compute_loss(logits, labels, lookup_table_dict)
+			if(mode == tf.estimator.ModeKeys.TRAIN):
+				# compute the loss and create the train_op
+				loss, train_op = self.compute_loss(logits, labels, lookup_table_dict, mode=mode)
+			elif(mode == tf.estimator.ModeKeys.EVAL):
+				loss, train_op = self.compute_loss(logits, labels, lookup_table_dict, mode=mode)
+				# push the predictions and labels into a collection for hooks to access
+				tf.logging.debug("Adding keys for evaluation hooks")
+				label_tokens, label_length = labels
+				prediction_tokens, prediction_length = predictions["tokens"], predictions["length"]
+#				tf.add_to_collection("label_tokens", label_tokens)
+#				tf.add_to_collection("label_length", label_length)
+				tf.add_to_collection("prediction_tokens", prediction_tokens)
+				tf.add_to_collection("prediction_length", prediction_length)
 			elif(mode == tf.estimator.ModeKeys.PREDICT):
-				pass
+				# pure prediction
+				loss, train_op = None, None
 			elif(mode == tf.estimator.ModeKeys.EXPORT):
 				raise NotImplementedError()
 			else:
 				raise ValueError("Mode {} invalid!".format(mode))
 		return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, predictions=predictions)
 	
-	def model_hook(self, mode=tf.estimator.ModeKeys.TRAIN):
+	def model_hook(self, mode=tf.estimator.ModeKeys.TRAIN, eval_metric=None, eval_reference_file=None):
 		"""Create and build necessary hooks to aid in the processes
 			Args:
 				mode: the mode that the model is running
@@ -262,17 +315,25 @@ class DefaultSeq2Seq:
 #			hooks.append( step_hook )
 #			logging_hook = tf.estimator.LoggingTensorHook({"per_sentence_loss": "loss"}, every_n_iter=5)
 #			hooks.append( logging_hook )
+		if(mode == tf.estimator.ModeKeys.EVAL):
+			if(eval_reference_file is not None):
+				if(eval_metric == "bleu"):
+					script = "perl scripts/multi-bleu.perl " + eval_reference_file + " < {prediction_file}"
+				else:
+					raise ValueError("eval_metric value unrecognized: {:s}".format(eval_metric))
+				metric_hook = translator_hooks.PredictionMetricHook(self.format_prediction, script, model_dir=self.estimator.model_dir)
+				hooks.append(metric_hook)
 		return hooks
 
-	def format_prediction(self, predictions, stream):
+	def format_prediction(self, prediction, stream):
 		"""Push the prediction tokens into proper string stream
 		Args:
-			predictions: the values gotten from estimator.predict, in form of (tokens, ids, length)
+			prediction: the values gotten from estimator.predict, in form of (tokens, ids, length) per single arguments
 			stream: the string stream for the values to print into
 		Returns:
 			the satisfied stream
 		"""
-		for tokens, _, length in zip(*predictions):
-			sentence = " ".join(tokens[:length]) + "\n"
-			stream.write(sentence)
+		tokens, _, length = prediction
+		sentence = b" ".join(tokens[:length - 1]) + b"\n"
+		stream.write(sentence.decode("utf-8"))
 		return stream
