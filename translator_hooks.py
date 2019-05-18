@@ -6,14 +6,16 @@ class PredictionMetricHook(tf.train.SessionRunHook):
 	"""A hook that retrieve the prediction result and compare it using external scripts
 		Should only work on evals 
 	"""
-	def __init__(self, print_fn, script, clean_after_hook=False, model_dir="./"):
+	def __init__(self, print_fn, script, clean_after_hook=False, summary_extraction_fn=None, model_dir="./"):
 		"""Args:
 			print_fn: receive (tokens, length, stream) to write the data
 			script: the external command called to evaluate the data
 			clean_after_hook: if true, remove the file after evaluation
+			summary_extraction_fn: None or callable that receive the result of the script and output (name, scalar) to write on a tensorboard
 		"""
 		self._script = script
 		self._print_fn = print_fn
+		self._summary_extraction_fn = summary_extraction_fn
 		self._clean = clean_after_hook
 		self._model_dir = model_dir
 		self._first_write = True
@@ -34,6 +36,7 @@ class PredictionMetricHook(tf.train.SessionRunHook):
 		"""Write the batches into the file one batch at a time"""
 		prediction_tokens, prediction_length, global_step = run_values.results[-3:]
 		self._file_path = file_path = os.path.join(self._model_dir, "prediction.{:d}.txt".format(global_step))
+		self._global_step = global_step
 		if(self._first_write):
 			# check file does not exist, so 'a' mode is justified
 			if(os.path.isfile(file_path)):
@@ -51,4 +54,11 @@ class PredictionMetricHook(tf.train.SessionRunHook):
 		process_command = self._script.format(prediction_file=self._file_path)
 		tf.logging.warn("Prediction metric calculation command: {:s} using shell, fix later by subprocess PIPE".format(process_command))
 		process_result = subprocess.check_output([process_command], shell=True)
-		tf.logging.info("Prediction evalulation output: {:s}".format(process_result.decode("utf-8").strip()))
+		process_result = process_result.decode("utf-8").strip()
+		tf.logging.info("Evaluation output: {:s}".format(process_result))
+		if(self._summary_extraction_fn is not None):
+			# extra script to extract value and view it on the tensorboard
+			summary_name, summary_value = self._summary_extraction_fn(process_result)
+			summary = tf.Summary(value=[tf.Summary.Value(tag=summary_name, simple_value=summary_value)])
+			summary_writer = tf.summary.FileWriter(self._model_dir)
+			summary_writer.add_summary(summary, global_step = self._global_step)

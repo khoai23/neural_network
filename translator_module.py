@@ -1,5 +1,5 @@
 import tensorflow as tf
-import io
+import io, re
 import translator_hooks
 
 UNK_ID, UNK_TOKEN = 0, "<unk>"
@@ -30,6 +30,90 @@ def _simple_processing_dataset(dataset):
 	force_to_dense = lambda item: (tf.squeeze(tf.sparse_tensor_to_dense(item[0], default_value="<pad>"), axis=[0]), item[1])
 	dataset = dataset.map( lambda features, labels: (force_to_dense(features), force_to_dense(labels)) )
 	return dataset
+
+def _build_attention(rnn_cell, mode, batch_size, beam_size, scope="cell", wrapper_config=None):
+	"""Build attention wrapping depending on the mode.
+	Args:
+		rnn_cell: the cell to be wrapped by attention
+		mode: the mode of the model_fn
+		batch_size: the size of the data batch
+		beam_size: the width of the beam used
+		scope: the scope to build the cell into
+		wrapper_config: tuple of num_units, memory, memory_sequence_length, rnn_initial_state
+	Returns:
+		tuple of single_cell, single_start_state, beamed_cell, beamed_start_state
+	"""
+	num_units, memory, memory_sequence_length, rnn_state = wrapper_config
+	dtype = memory.dtype
+	# alright, this is outright retarded.
+	attention_layer = tf.layers.Dense(num_units, dtype=dtype, name="attention_layer")
+	if(mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL):
+		with tf.variable_scope(scope, reuse=False) as single_scope:
+			tf.logging.debug("Building attention cell for logits (TRAIN/EVAL) in scope {}".format(tf.contrib.framework.get_name_scope()))
+			# as first, initialize all these from scratch
+			single_attention_mechanism = tf.contrib.seq2seq.LuongAttention(num_units, memory=memory, memory_sequence_length=memory_sequence_length)
+			single_wrapper = tf.contrib.seq2seq.AttentionWrapper(rnn_cell, single_attention_mechanism, attention_layer_size=num_units)
+			single_start_state = single_wrapper.zero_state(batch_size, dtype).clone(cell_state=rnn_state)
+	else:
+		single_wrapper, single_start_state = None, None
+		single_scope = None
+
+	if(mode == tf.estimator.ModeKeys.PREDICT or mode == tf.estimator.ModeKeys.EVAL):
+		with tf.variable_scope(single_scope, default_name=scope, reuse=(mode == tf.estimator.ModeKeys.EVAL)):
+			tf.logging.debug("Building attention cell for infer (PREDICT/EVAL) in scope {}".format(tf.contrib.framework.get_name_scope()))
+			# only reuse if the mode is eval (single version created)
+			# first, tile everything
+			tiled_memory = tf.contrib.seq2seq.tile_batch(memory, multiplier=beam_size)
+			tiled_memory_sequence_length = tf.contrib.seq2seq.tile_batch(memory_sequence_length, multiplier=beam_size)
+			tiled_state = tf.contrib.seq2seq.tile_batch(rnn_state, multiplier=beam_size)
+			# construct the wrapper and states as normal
+			beamed_attention_mechanism = tf.contrib.seq2seq.LuongAttention(num_units, memory=tiled_memory, memory_sequence_length=tiled_memory_sequence_length)
+			beamed_wrapper = tf.contrib.seq2seq.AttentionWrapper(rnn_cell, beamed_attention_mechanism, attention_layer_size=num_units)
+			beamed_start_state = beamed_wrapper.zero_state(batch_size * beam_size, dtype).clone(cell_state=tiled_state)
+	else:
+		beamed_wrapper, beamed_start_state = None, None
+	# return the cells
+	return single_wrapper, single_start_state, beamed_wrapper, beamed_start_state
+
+def _replace_unk_tokens(tgt_tokens, tgt_ids, alignments, src_tokens):
+	"""Replace the unk tokens with the highest aligned token in source
+	Args:
+		tgt_tokens: the reordered and mapped target tokens, still with UNK_TOKEN. [batch_size, beam_width, tgt_len]
+		tgt_ids: the reordered ids, [batch_size, beam_width, tgt_len]
+		alignments: the alignments recovered from the beam process, [batch_size, beam_width, tgt_len, src_len]
+		src_tokens: the tokens from the source [batch_size, src_len]
+	Returns:
+		the reordered tgt_tokens with the replaced pieces
+	"""
+	replacer = tf.equal(tgt_ids, UNK_ID)
+	aligned_src_indices = tf.argmax(alignments, axis=-1, name="aligned_src_indices_raw")
+	# increase the indices to allow gathering
+	batch_size = tf.shape(tgt_ids)[0]
+	tgt_len = tf.shape(tgt_ids)[-1]
+	aligned_increase = tf.range(batch_size) * tgt_len
+	aligned_src_indices = aligned_src_indices + tf.reshape(aligned_increase, [batch_size, 1, 1])
+	# gather the correlating tokens from src
+	flattened_src_tokens = tf.reshape(src_tokens, [-1])
+	aligned_src_tokens = tf.gather(flattened_src_tokens, aligned_src_indices, name="aligned_src_tokens")
+	# replace the <unk> token with the aligned src
+	replaced_tgt_tokens = tf.where(replacer, x=aligned_src_tokens, y=tgt_tokens)
+	return replaced_tgt_tokens
+
+def construct_optimizer(loss, global_step, optimizer="SGD", learning_rate=1.0, clip_gradients=5.0, decay_type=tf.train.exponential_decay, decay_start_step=10000, decay_step=1000, decay_rate=0.5):
+	"""Construct an optimizer to minimize loss
+		Args:
+			loss: the scalar need to be minimized
+			global_step: the increment value
+			optimizer: name of the optimizer
+			clip_gradients: the gradient need clipping
+			decay:
+				decay_type: the tf.train.__class__ decay scheme
+				decay_start_step: the step to start decay scheme
+				decay_step: the step to apply the decay function
+				decay_rate: the rate of decay per step
+	"""
+	decay_fn = lambda lr, gs: decay_type(lr, tf.maximum(gs-decay_start_step, 0), decay_step, decay_rate, name="decay_fn")
+	return tf.contrib.layers.optimize_loss(loss=loss, global_step=global_step, learning_rate=learning_rate, optimizer=optimizer, clip_gradients=clip_gradients, learning_rate_decay_fn=decay_fn, name="train_op")
 
 class DefaultSeq2Seq:
 	"""A seq2seq class that is compatible with tf estimator 
@@ -129,9 +213,8 @@ class DefaultSeq2Seq:
 			padding_fn = lambda key, dataset: dataset.padded_batch(batch_size, padded_shapes=expected_padded_shapes, padding_values= expected_padded_values)
 			# sort the dataset (of a sort, using group_by_window on a bucket size)
 			data_prepared = data_prepared.apply(tf.contrib.data.group_by_window(key_func=lambda features, labels: tf.cast(labels[1] // window_size, dtype=tf.int64), reduce_func=padding_fn, window_size=batch_size))
-			# repeat and shuffle 
-			data_prepared = data_prepared.repeat()
-			data_prepared = data_prepared.shuffle(batch_size * 16)
+			# repeat and shuffle, using very big buffer size for uniform shuffling
+			data_prepared = data_prepared.shuffle(buffer_size=1000000, reshuffle_each_iteration=True).repeat()
 		else:
 			tf.logging.debug("In mode eval, only read the dataset once, with no grouping by length (but still dropping)")
 			# the padding function is used directly, so it only need dataset
@@ -154,17 +237,20 @@ class DefaultSeq2Seq:
 			tgt_reverse_table = tf.contrib.lookup.index_to_string_table_from_file(vocabulary_file=self.tgt_vocab_file, default_value=UNK_TOKEN, name="tgt_reverse_lookup_table")
 		return {"src_lookup_table":src_lookup_table, "tgt_lookup_table":tgt_lookup_table, "tgt_reverse_table":tgt_reverse_table}
 
-	def build_model(self, features, labels, lookup_table_dict, mode=tf.estimator.ModeKeys.TRAIN):
+	def build_model(self, features, labels, lookup_table_dict, params={}, mode=tf.estimator.ModeKeys.TRAIN):
 		"""Build a model that depending on the mode will either output the logits or the predictions or both
 		Args:
 			features: a pair of (tokens, lengths) of tensors
 			labels: a pair of (tokens, lengths) of tensors, or None
 			lookup_table_dict: the result of build_vocab
+			params: a dict of external parameters
 			mode
 		"""
 		tf.logging.debug("Features tensor fed into build_model: {}".format(features))
 		features_tokens, features_length = features
 		batch_size = tf.shape(features_length)[0]
+		beam_size = params.get("beam_size", 10)
+		max_decoder_iteration = params.get("max_decoder_iteration", 250)
 
 		tf.logging.debug("Build embedding and create necessary values ")
 		# create the embedding used
@@ -182,14 +268,13 @@ class DefaultSeq2Seq:
 			encoder_outputs = tf.concat(encoder_bi_outputs, axis=-1)
 
 		tf.logging.debug("Build decoder using mode {}".format(mode))
-		with tf.variable_scope("decoder"):
+		with tf.variable_scope("decoder") as decoder_scope:
 			# first, the multi cell to be used
 			decoder_sub_cells = [tf.nn.rnn_cell.BasicLSTMCell(self.num_units, name="cell_{:d}".format(cell_id)) for cell_id in range(1, 1+2)]
 			decoder_cell = tf.nn.rnn_cell.MultiRNNCell(decoder_sub_cells)
 			# second, the attention and its mechanism/wrapper. also adapt the encoder state to the first state of the wrapper itself
-			attention_mechanism = tf.contrib.seq2seq.LuongAttention(self.num_units, memory=encoder_outputs, memory_sequence_length=features_length)
-			decoder_cell_with_attention = tf.contrib.seq2seq.AttentionWrapper(decoder_cell, attention_mechanism, attention_layer_size=self.num_units)
-			decoder_initial_state = decoder_cell_with_attention.zero_state(batch_size, self.dtype).clone(cell_state=encoder_state)
+			wrapper_config = self.num_units, encoder_outputs, features_length, encoder_state
+			single_cell, single_start_state, beamed_cell, beamed_start_state = _build_attention(decoder_cell, mode, batch_size=batch_size, beam_size=beam_size, wrapper_config=wrapper_config)
 			# third, the projection layer to project into the tgt_vocab
 			tf.logging.debug("Tgt vocab size: {:d}".format(self.tgt_vocab_size))
 			projection_layer = tf.layers.Dense(self.tgt_vocab_size, name="projection_layer")
@@ -208,8 +293,9 @@ class DefaultSeq2Seq:
 				decoder_input_ids = tf.concat([decoder_input_front_padding, label_ids], axis=-1, name="decode_input_ids")
 				decoder_input_embedded = tf.nn.embedding_lookup(tgt_embedding, decoder_input_ids, name="decode_input_embedded")
 				training_helper = tf.contrib.seq2seq.TrainingHelper(decoder_input_embedded, decoder_input_length)
-				decoder = tf.contrib.seq2seq.BasicDecoder(decoder_cell_with_attention, training_helper, decoder_initial_state, output_layer=projection_layer)
-				decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(decoder)
+				decoder = tf.contrib.seq2seq.BasicDecoder(single_cell, training_helper, single_start_state, output_layer=projection_layer)
+				with tf.variable_scope("dynamic_decode") as dy_scope:
+					decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(decoder, scope=dy_scope)
 				logits = decoder_output.rnn_output
 			else:
 				logits = None
@@ -217,17 +303,29 @@ class DefaultSeq2Seq:
 			# building the decoder for eval/infer for prediction
 			if(mode == tf.estimator.ModeKeys.EVAL or mode == tf.estimator.ModeKeys.PREDICT):
 				tf.logging.debug("Creating predictions for EVAL/PREDICT")
-				start_ids = tf.fill(tf.shape(features_length), SOS_ID, name="decode_start_ids")
-				greedy_helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(tgt_embedding, start_ids, EOS_ID)
-				decoder =  tf.contrib.seq2seq.BasicDecoder(decoder_cell_with_attention, greedy_helper, decoder_initial_state, output_layer=projection_layer)
-				decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(decoder)
-				prediction_ids = tf.cast(decoder_output.sample_id, features_ids.dtype)
+				start_ids = tf.fill([batch_size], SOS_ID, name="decode_start_ids")
+				beam_decoder = tf.contrib.seq2seq.BeamSearchDecoder(cell=beamed_cell, embedding=tgt_embedding, start_tokens=start_ids, end_token=EOS_ID, initial_state=beamed_start_state, beam_width=beam_size, output_layer=projection_layer)
+				with tf.variable_scope("dynamic_decode", reuse=(mode==tf.estimator.ModeKeys.EVAL)) as dy_scope:
+					decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(beam_decoder, maximum_iterations=max_decoder_iteration, scope=dy_scope)
+				assert isinstance(decoder_output, tf.contrib.seq2seq.FinalBeamSearchDecoderOutput), "Is actually {}".format(type(decoder_output))
+				prediction_ids = tf.cast(decoder_output.predicted_ids, features_ids.dtype)
+				# the prediction_ids is [batch, tgt_len, beam] instead of [batch, beam, tgt]. Rectify
+				prediction_ids = tf.transpose(prediction_ids, perm=[0, 2, 1])
 				prediction_tokens = lookup_table_dict["tgt_reverse_table"].lookup(prediction_ids)
+#				prediction_alignment = final_state.alignment_history
+#				if(isinstance(prediction_alignment, tf.TensorArray)):
+#					tf.logging.warn("The alignment is still in array state, so it had not been re-gathered. Update your tensorflow version to get the correct version")
+#					prediction_alignment = prediction_alignment.stack()
+#				# the alignment should be in [batch, beam, src_len, tgt_len]
+#				prediction_alignment = tf.transpose(prediction_alignment, perm=[0, 1, 3, 2])
+#				# replace unknown words
+#				prediction_tokens = _replace_unk_tokens(prediction_tokens, prediction_ids, prediction_alignment, features_tokens)
+				prediction_length = final_state.lengths
 				# predictions must be a dict. Bummer
 				predictions = {
 						"ids":prediction_ids, 
 						"tokens":prediction_tokens, 
-						"length":decoder_length
+						"length":prediction_length
 				}
 			else:
 				predictions = None
@@ -262,7 +360,7 @@ class DefaultSeq2Seq:
 			optimizer_loss = tf.identity(per_sentence_loss, name="loss")
 		# create the optimizer basing on that loss
 		global_step = tf.train.get_or_create_global_step()
-		train_op = tf.contrib.layers.optimize_loss(loss=optimizer_loss, global_step=global_step, learning_rate=1.0, optimizer="SGD", clip_gradients=5.0, name="train_op")
+		train_op = construct_optimizer(optimizer_loss, global_step)
 		return optimizer_loss, train_op
 
 	def model_fn(self, features, labels, mode=tf.estimator.ModeKeys.TRAIN, params=None, config=None):
@@ -278,7 +376,7 @@ class DefaultSeq2Seq:
 		tf.logging.debug("Building seq2seq model")
 		with tf.variable_scope("seq2seq", initializer=tf.initializers.random_uniform(minval=-0.1, maxval=0.1, dtype=self.dtype)):
 			lookup_table_dict = self.build_vocab()
-			logits, predictions = self.build_model(features, labels, lookup_table_dict, mode)
+			logits, predictions = self.build_model(features, labels, lookup_table_dict, mode=mode)
 			if(mode == tf.estimator.ModeKeys.TRAIN):
 				# compute the loss and create the train_op
 				loss, train_op = self.compute_loss(logits, labels, lookup_table_dict, mode=mode)
@@ -319,21 +417,27 @@ class DefaultSeq2Seq:
 			if(eval_reference_file is not None):
 				if(eval_metric == "bleu"):
 					script = "perl scripts/multi-bleu.perl " + eval_reference_file + " < {prediction_file}"
+					value_extractor = lambda result_str: ("metric/BLEU", float(re.search(r"BLEU = ([\d\.]+?),", result_str).group(1)) )
 				else:
 					raise ValueError("eval_metric value unrecognized: {:s}".format(eval_metric))
-				metric_hook = translator_hooks.PredictionMetricHook(self.format_prediction, script, model_dir=self.estimator.model_dir)
+				metric_hook = translator_hooks.PredictionMetricHook(self.format_prediction, script, model_dir=self.estimator.model_dir, summary_extraction_fn=value_extractor)
 				hooks.append(metric_hook)
 		return hooks
 
-	def format_prediction(self, prediction, stream):
+	def format_prediction(self, prediction, stream, n_best=1):
 		"""Push the prediction tokens into proper string stream
 		Args:
 			prediction: the values gotten from estimator.predict, in form of (tokens, ids, length) per single arguments
 			stream: the string stream for the values to print into
+			n_best: the number of beam to be printed outward
 		Returns:
 			the satisfied stream
 		"""
 		tokens, _, length = prediction
-		sentence = b" ".join(tokens[:length - 1]) + b"\n"
+		# select the n_best highest beam
+		n_best = min(n_best, len(length))
+		for i in range(n_best):
+			tokens, length = tokens[i], length[i]
+			sentence = b" ".join(tokens[:length - 1]) + b"\n"
 		stream.write(sentence.decode("utf-8"))
 		return stream

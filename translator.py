@@ -14,6 +14,7 @@ def files_verification(list_file_paths):
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description="Translator using an estimator module")
 	parser.add_argument("mode", choices=["train", "eval", "infer", "train_and_eval", "score"], help="The running mode of the script")
+	parser.add_argument("--full_gpu", action="store_true", help="if enabled, use the entirety of gpu ram as needed")
 	parser.add_argument("--data", choices=DATA_CONFIG.keys(), required=True, help="The data config to be used")
 	args = parser.parse_args()
 	# unload data paths
@@ -27,7 +28,9 @@ if __name__ == "__main__":
 	model_position = data_config["model_location"]
 	# start running
 	print("Running mode {}".format(args.mode))
-	translation_model = DefaultSeq2Seq(num_units=128, vocab_files=(vocab_location_en, vocab_location_vi), model_dir=model_position)
+	session_config = tf.ConfigProto()
+	session_config.gpu_options.allow_growth = not args.full_gpu
+	translation_model = DefaultSeq2Seq(num_units=128, vocab_files=(vocab_location_en, vocab_location_vi), model_dir=model_position, session_config=session_config)
 	# set the verbosity
 	translation_model.verbosity(tf.logging.DEBUG)
 	if(args.mode == "train"):
@@ -44,6 +47,18 @@ if __name__ == "__main__":
 		eval_hooks = translation_model.model_hook(mode, eval_metric="bleu", eval_reference_file=eval_location_vi)
 		translation_model.estimator.evaluate(input_fn=eval_input_fn, hooks=eval_hooks)
 		print("Eval completed")
+	elif(args.mode == "train_and_eval"):
+		# TrainSpec
+		train_input_fn = lambda: translation_model.build_batch_dataset_tensor( (train_location_en, train_location_vi), mode=tf.estimator.ModeKeys.TRAIN )
+		train_hooks = translation_model.model_hook(tf.estimator.ModeKeys.TRAIN)
+		train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, hooks=train_hooks, max_steps=max_steps)
+		# EvalSpec and checker
+		_ = check_blank_lines(eval_location_en), check_blank_lines(eval_location_vi)
+		eval_input_fn = lambda: translation_model.build_batch_dataset_tensor( (eval_location_en, eval_location_vi), mode=tf.estimator.ModeKeys.EVAL )
+		eval_hooks = translation_model.model_hook(tf.estimator.ModeKeys.EVAL, eval_metric="bleu", eval_reference_file=eval_location_vi)
+		eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn, hooks=eval_hooks)
+		# Run the train_and_evaluate
+		tf.estimator.train_and_evaluate(translation_model.estimator, train_spec=train_spec, eval_spec=eval_spec)
 	elif(args.mode == "infer"):
 		mode = tf.estimator.ModeKeys.PREDICT
 		predict_input_fn = lambda: translation_model.build_infer_dataset_tensor( eval_location_en )
