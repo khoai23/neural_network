@@ -68,7 +68,7 @@ def _build_attention(rnn_cell, mode, batch_size, beam_size, scope="cell", wrappe
 			tiled_state = tf.contrib.seq2seq.tile_batch(rnn_state, multiplier=beam_size)
 			# construct the wrapper and states as normal
 			beamed_attention_mechanism = tf.contrib.seq2seq.LuongAttention(num_units, memory=tiled_memory, memory_sequence_length=tiled_memory_sequence_length)
-			beamed_wrapper = tf.contrib.seq2seq.AttentionWrapper(rnn_cell, beamed_attention_mechanism, attention_layer_size=num_units)
+			beamed_wrapper = tf.contrib.seq2seq.AttentionWrapper(rnn_cell, beamed_attention_mechanism, attention_layer_size=num_units, alignment_history=True)
 			beamed_start_state = beamed_wrapper.zero_state(batch_size * beam_size, dtype).clone(cell_state=tiled_state)
 	else:
 		beamed_wrapper, beamed_start_state = None, None
@@ -89,9 +89,9 @@ def _replace_unk_tokens(tgt_tokens, tgt_ids, alignments, src_tokens):
 	aligned_src_indices = tf.argmax(alignments, axis=-1, name="aligned_src_indices_raw")
 	# increase the indices to allow gathering
 	batch_size = tf.shape(tgt_ids)[0]
-	tgt_len = tf.shape(tgt_ids)[-1]
-	aligned_increase = tf.range(batch_size) * tgt_len
-	aligned_src_indices = aligned_src_indices + tf.reshape(aligned_increase, [batch_size, 1, 1])
+	src_len = tf.shape(src_tokens)[-1]
+	aligned_increase = tf.range(batch_size) * src_len
+	aligned_src_indices = tf.cast(aligned_src_indices, aligned_increase.dtype) + tf.reshape(aligned_increase, [batch_size, 1, 1])
 	# gather the correlating tokens from src
 	flattened_src_tokens = tf.reshape(src_tokens, [-1])
 	aligned_src_tokens = tf.gather(flattened_src_tokens, aligned_src_indices, name="aligned_src_tokens")
@@ -304,7 +304,7 @@ class DefaultSeq2Seq:
 			if(mode == tf.estimator.ModeKeys.EVAL or mode == tf.estimator.ModeKeys.PREDICT):
 				tf.logging.debug("Creating predictions for EVAL/PREDICT")
 				start_ids = tf.fill([batch_size], SOS_ID, name="decode_start_ids")
-				beam_decoder = tf.contrib.seq2seq.BeamSearchDecoder(cell=beamed_cell, embedding=tgt_embedding, start_tokens=start_ids, end_token=EOS_ID, initial_state=beamed_start_state, beam_width=beam_size, output_layer=projection_layer)
+				beam_decoder = tf.contrib.seq2seq.BeamSearchDecoder(cell=beamed_cell, embedding=tgt_embedding, start_tokens=start_ids, end_token=EOS_ID, initial_state=beamed_start_state, beam_width=beam_size, output_layer=projection_layer, reorder_tensor_arrays=True)
 				with tf.variable_scope("dynamic_decode", reuse=(mode==tf.estimator.ModeKeys.EVAL)) as dy_scope:
 					decoder_output, final_state, decoder_length = tf.contrib.seq2seq.dynamic_decode(beam_decoder, maximum_iterations=max_decoder_iteration, scope=dy_scope)
 				assert isinstance(decoder_output, tf.contrib.seq2seq.FinalBeamSearchDecoderOutput), "Is actually {}".format(type(decoder_output))
@@ -312,14 +312,18 @@ class DefaultSeq2Seq:
 				# the prediction_ids is [batch, tgt_len, beam] instead of [batch, beam, tgt]. Rectify
 				prediction_ids = tf.transpose(prediction_ids, perm=[0, 2, 1])
 				prediction_tokens = lookup_table_dict["tgt_reverse_table"].lookup(prediction_ids)
-#				prediction_alignment = final_state.alignment_history
-#				if(isinstance(prediction_alignment, tf.TensorArray)):
-#					tf.logging.warn("The alignment is still in array state, so it had not been re-gathered. Update your tensorflow version to get the correct version")
-#					prediction_alignment = prediction_alignment.stack()
-#				# the alignment should be in [batch, beam, src_len, tgt_len]
-#				prediction_alignment = tf.transpose(prediction_alignment, perm=[0, 1, 3, 2])
-#				# replace unknown words
-#				prediction_tokens = _replace_unk_tokens(prediction_tokens, prediction_ids, prediction_alignment, features_tokens)
+				prediction_alignment = final_state.cell_state.alignment_history
+				if(isinstance(prediction_alignment, tf.TensorArray)):
+					tf.logging.warn("The alignment is still in array state, so it had not been re-gathered. Update your tensorflow version to get the correct version")
+					prediction_alignment = prediction_alignment.stack(name="raw_alignment")
+				# the alignment should be in [batch, beam, tgt_len, src_len] instead of currently [tgt_len, batch*beam, src_len]
+				# first, transpose the tgt_len to the back. Then, reorder
+				prediction_alignment = tf.transpose(prediction_alignment, perm=[1, 0, 2])
+				# extra assertion to assure that the aligment is indeed in [?, tgt_len, src_len]
+				with tf.control_dependencies([tf.assert_equal(tf.shape(prediction_alignment)[-1], tf.shape(features_ids)[-1]), tf.assert_equal(tf.shape(prediction_alignment)[-2], tf.shape(prediction_ids)[-1])]):
+					prediction_alignment = tf.reshape(prediction_alignment, [batch_size, beam_size, tf.shape(prediction_alignment)[-2], tf.shape(prediction_alignment)[-1]])
+				# replace unknown words
+				prediction_tokens = _replace_unk_tokens(prediction_tokens, prediction_ids, prediction_alignment, features_tokens)
 				prediction_length = final_state.lengths
 				# predictions must be a dict. Bummer
 				predictions = {
