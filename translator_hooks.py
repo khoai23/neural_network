@@ -1,5 +1,4 @@
 import tensorflow as tf
-import subprocess
 import os, sys, io
 
 class PredictionMetricHook(tf.train.SessionRunHook):
@@ -9,7 +8,7 @@ class PredictionMetricHook(tf.train.SessionRunHook):
 	def __init__(self, print_fn, script, clean_after_hook=False, summary_extraction_fn=None, model_dir="./"):
 		"""Args:
 			print_fn: receive (tokens, length, stream) to write the data
-			script: the external command called to evaluate the data
+			script: a function that receive the file and output the scalar value to be written onto the graph
 			clean_after_hook: if true, remove the file after evaluation
 			summary_extraction_fn: None or callable that receive the result of the script and output (name, scalar) to write on a tensorboard
 		"""
@@ -51,9 +50,9 @@ class PredictionMetricHook(tf.train.SessionRunHook):
 
 	def end(self, session):
 		"""Run the script to evaluate and broadcast its values"""
-		process_command = self._script.format(prediction_file=self._file_path)
-		tf.logging.warn("Prediction metric calculation command: {:s} using shell, fix later by subprocess PIPE".format(process_command))
-		process_result = subprocess.check_output([process_command], shell=True)
+#		process_command = self._script.format(prediction_file=self._file_path)
+#		tf.logging.warn("Prediction metric calculation command: {:s} using shell, fix later by subprocess PIPE".format(process_command))
+		process_result = self._script(self._file_path)
 		process_result = process_result.decode("utf-8").strip()
 		tf.logging.info("Evaluation output: {:s}".format(process_result))
 		if(self._summary_extraction_fn is not None):

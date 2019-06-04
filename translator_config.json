@@ -24,7 +24,7 @@
 		"eval_location_vi": "/home/khoai23/workspace/iwslt15/tst2012.vi",
 		"vocab_location_en":"/home/khoai23/workspace/iwslt15/vocab.en",
 		"vocab_location_vi":"/home/khoai23/workspace/iwslt15/vocab.vi",
-		"model_location":"/home/khoai23/neural_network/data/model/translator/test_run"
+		"model_location":"/home/khoai23/neural_network/data/model/translator/test_run_3"
 	},
 	"placeholder": {
 	

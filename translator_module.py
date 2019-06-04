@@ -1,5 +1,6 @@
 import tensorflow as tf
 import io, re
+import subprocess
 import translator_hooks
 
 UNK_ID, UNK_TOKEN = 0, "<unk>"
@@ -132,12 +133,12 @@ class DefaultSeq2Seq:
 		"""Set the tf logging verbosity level"""
 		tf.logging.set_verbosity(level)
 
-	def build_input_tensor(self):
+	def build_input_tensor(self, export_form=True):
 		"""Build an input tensor that will handle the individual batch. Is essentially serving function
 		Returns:
 			tuple of (placeholder, tokens, lengths)
 		"""
-		tf.logging.debug("Build input")
+		tf.logging.debug("Build input in tensor form")
 		with tf.variable_scope("input"):
 			input_placeholder = tf.placeholder(tf.string, shape=(None, ), name="batch_input")
 			input_tokenized_sparse = tf.string_split(input_placeholder)
@@ -148,7 +149,16 @@ class DefaultSeq2Seq:
 			input_length_dense = tf.sparse_tensor_to_dense(input_length_sparse, default_value=-1)
 			# input_length must have +1 since it is actually max index
 			input_length = tf.reduce_max(input_length_dense, axis=1) + 1
-		return input_placeholder, input_tokenized_dense, input_length
+		if(export_form):
+			# features, receiver
+			return tf.estimator.export.ServingInputReceiver( {
+				"tokens": input_tokenized_dense, 
+				"length": input_length
+			}, {
+				"feature": input_placeholder
+			} )
+		else:
+			return input_placeholder, input_tokenized_dense, input_length
 
 	def build_infer_dataset_tensor(self, infer_file):
 		"""Build an input with only features for prediction
@@ -172,6 +182,9 @@ class DefaultSeq2Seq:
 		infer_dataset = infer_dataset.apply( padding_fn )
 		# apparently it still need to conform to the input_fn
 		infer_dataset = tf.data.Dataset.zip( (infer_dataset, infer_dataset) )
+		# map to name
+		key_name = ["tokens", "length"]
+		data_prepared = data_prepared.map(lambda features, labels: ({key: val for key, val in zip(key_name, features)}, None))
 		# throw
 		iterator = infer_dataset.make_initializable_iterator()
 		tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, iterator.initializer)
@@ -220,6 +233,9 @@ class DefaultSeq2Seq:
 			# the padding function is used directly, so it only need dataset
 			padding_fn = lambda dataset: dataset.padded_batch(batch_size, padded_shapes=expected_padded_shapes, padding_values= expected_padded_values)
 			data_prepared = data_prepared.apply(padding_fn)
+		# create dictionary to help with the export process, since ServingInputReceiver do not accept a tuple of Tensor
+		key_name = ["tokens", "length"]
+		data_prepared = data_prepared.map(lambda features, labels: ({key: val for key, val in zip(key_name, features)}, {key: val for key, val in zip(key_name, labels)}))
 		iterator = data_prepared.make_initializable_iterator()
 		# add to table initialization
 		tf.add_to_collection(tf.GraphKeys.TABLE_INITIALIZERS, iterator.initializer)
@@ -247,7 +263,8 @@ class DefaultSeq2Seq:
 			mode
 		"""
 		tf.logging.debug("Features tensor fed into build_model: {}".format(features))
-		features_tokens, features_length = features
+		features_tokens = features["tokens"]
+		features_length = features["length"]
 		batch_size = tf.shape(features_length)[0]
 		beam_size = params.get("beam_size", 10)
 		max_decoder_iteration = params.get("max_decoder_iteration", 250)
@@ -283,7 +300,8 @@ class DefaultSeq2Seq:
 			if(mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL):
 				tf.logging.debug("Creating logits for TRAIN/EVAL")
 				tf.logging.debug("Labels tensor fed into build_model: {}".format(labels))
-				label_tokens, label_length = labels
+				label_tokens = labels["tokens"]
+				label_length = labels["length"]
 				label_ids = lookup_table_dict["tgt_lookup_table"].lookup(label_tokens)
 				# pad the label_ids into <s> w1 w2 ... for the input of the training helper
 				# bummer, tf fill do not have dtype. Really.
@@ -346,7 +364,8 @@ class DefaultSeq2Seq:
 			A loss as first argument and a train_op if mode is TRAIN
 		"""
 		# the labels must be padded at the back with an extra eos id
-		label_tokens, label_length = labels
+		label_tokens = labels["tokens"]
+		label_length = labels["length"]
 		label_ids = lookup_table_dict["tgt_lookup_table"].lookup(label_tokens)
 		back_padding = tf.fill(tf.shape(label_length), EOS_ID)
 		back_padding = tf.cast( tf.expand_dims(back_padding, axis=1), dtype=label_ids.dtype)
@@ -412,22 +431,42 @@ class DefaultSeq2Seq:
 		"""
 		hooks = []
 		if(mode == tf.estimator.ModeKeys.TRAIN):
-			pass
-#			step_hook = tf.estimator.StepCounterHook(every_n_steps=5)
-#			hooks.append( step_hook )
-#			logging_hook = tf.estimator.LoggingTensorHook({"per_sentence_loss": "loss"}, every_n_iter=5)
+			step_hook = tf.estimator.StepCounterHook(every_n_steps=500)
+			hooks.append( step_hook )
+#			logging_hook = tf.estimator.LoggingTensorHook({"per_sentence_loss": "loss"}, every_n_iter=50)
 #			hooks.append( logging_hook )
-		if(mode == tf.estimator.ModeKeys.EVAL):
+		elif(mode == tf.estimator.ModeKeys.EVAL):
 			if(eval_reference_file is not None):
 				if(eval_metric == "bleu"):
-					script = "perl scripts/multi-bleu.perl " + eval_reference_file + " < {prediction_file}"
+					# use subprocess PIPE
+					def script_fn(prediction_file):
+						piped_file = subprocess.Popen(("cat", prediction_file), stdout=subprocess.PIPE)
+						output = subprocess.check_output(("perl", "scripts/multi-bleu.perl", eval_reference_file), stdin=piped_file.stdout)
+						return output
+#					script = "perl scripts/multi-bleu.perl " + eval_reference_file + " < {prediction_file}"
 					value_extractor = lambda result_str: ("metric/BLEU", float(re.search(r"BLEU = ([\d\.]+?),", result_str).group(1)) )
 				else:
 					raise ValueError("eval_metric value unrecognized: {:s}".format(eval_metric))
-				metric_hook = translator_hooks.PredictionMetricHook(self.format_prediction, script, model_dir=self.estimator.model_dir, summary_extraction_fn=value_extractor)
+				metric_hook = translator_hooks.PredictionMetricHook(self.format_prediction, script_fn, model_dir=self.estimator.model_dir, summary_extraction_fn=value_extractor)
 				hooks.append(metric_hook)
 		return hooks
 
+	def model_exporter(self, export_mode="best"):
+		"""Create an Exporter to be used to export the models to servable versions
+		Args:
+			export_mode: the mode to export model on. could be best|last
+		Returns:
+			a tf.estimator.Exporter object for EvalSpec
+		"""
+		if(export_mode == "none"):
+			return None
+		elif(export_mode == "best"):
+			return tf.estimator.BestExporter(name=export_mode, serving_input_receiver_fn=lambda: self.build_input_tensor(export_form=True))
+		elif(export_mode == "latest"):
+			return tf.estimator.LastExporter(name=export_mode, serving_input_receiver_fn=lambda: self.build_input_tensor(export_form=True))
+		else:
+			raise ValueError("Export mode {:s} invalid.".format(export_mode))
+	
 	def format_prediction(self, prediction, stream, n_best=1):
 		"""Push the prediction tokens into proper string stream
 		Args:

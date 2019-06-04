@@ -16,6 +16,7 @@ if __name__ == "__main__":
 	parser.add_argument("mode", choices=["train", "eval", "infer", "train_and_eval", "score"], help="The running mode of the script")
 	parser.add_argument("--full_gpu", action="store_true", help="if enabled, use the entirety of gpu ram as needed")
 	parser.add_argument("--data", choices=DATA_CONFIG.keys(), required=True, help="The data config to be used")
+	parser.add_argument("--export_mode", choices=["best", "last", "none"], default="best", help="The mode to export the models. Only applicable to train_and_eval")
 	args = parser.parse_args()
 	# unload data paths
 	data_config = DATA_CONFIG[args.data]
@@ -56,7 +57,7 @@ if __name__ == "__main__":
 		_ = check_blank_lines(eval_location_en), check_blank_lines(eval_location_vi)
 		eval_input_fn = lambda: translation_model.build_batch_dataset_tensor( (eval_location_en, eval_location_vi), mode=tf.estimator.ModeKeys.EVAL )
 		eval_hooks = translation_model.model_hook(tf.estimator.ModeKeys.EVAL, eval_metric="bleu", eval_reference_file=eval_location_vi)
-		eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn, hooks=eval_hooks)
+		eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn, hooks=eval_hooks, exporters=[translation_model.model_exporter(export_mode=args.export_mode)])
 		# Run the train_and_evaluate
 		tf.estimator.train_and_evaluate(translation_model.estimator, train_spec=train_spec, eval_spec=eval_spec)
 	elif(args.mode == "infer"):
