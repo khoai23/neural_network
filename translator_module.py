@@ -100,7 +100,7 @@ def _replace_unk_tokens(tgt_tokens, tgt_ids, alignments, src_tokens):
 	replaced_tgt_tokens = tf.where(replacer, x=aligned_src_tokens, y=tgt_tokens)
 	return replaced_tgt_tokens
 
-def construct_optimizer(loss, global_step, optimizer="SGD", learning_rate=1.0, clip_gradients=5.0, decay_type=tf.train.exponential_decay, decay_start_step=10000, decay_step=1000, decay_rate=0.5):
+def construct_optimizer(loss, global_step, optimizer="SGD", learning_rate=1.0, clip_gradients=5.0, decay_type=tf.train.exponential_decay, decay_start_step=40000, decay_step=1000, decay_rate=0.5):
 	"""Construct an optimizer to minimize loss
 		Args:
 			loss: the scalar need to be minimized
@@ -120,7 +120,7 @@ class DefaultSeq2Seq:
 	"""A seq2seq class that is compatible with tf estimator 
 		Currently, some features are hard-coded (layer size is 2, padding is <\s>, et cetera)
 	"""
-	def __init__(self, num_units, vocab_files, params=None, **config):
+	def __init__(self, vocab_files, num_units=512, params=None, **config):
 		self._params = params or {}
 		self.estimator = tf.estimator.Estimator(self.model_fn, config=tf.estimator.RunConfig(**config))
 		self.num_units = num_units
@@ -227,9 +227,9 @@ class DefaultSeq2Seq:
 			# sort the dataset (of a sort, using group_by_window on a bucket size)
 			data_prepared = data_prepared.apply(tf.contrib.data.group_by_window(key_func=lambda features, labels: tf.cast(labels[1] // window_size, dtype=tf.int64), reduce_func=padding_fn, window_size=batch_size))
 			# repeat and shuffle, using very big buffer size for uniform shuffling
-			data_prepared = data_prepared.shuffle(buffer_size=1000000, reshuffle_each_iteration=True).repeat()
+			data_prepared = data_prepared.apply(tf.data.experimental.shuffle_and_repeat(1000000))
 		else:
-			tf.logging.debug("In mode eval, only read the dataset once, with no grouping by length (but still dropping)")
+			tf.logging.debug("In mode eval, only read the dataset once, with no grouping by length")
 			# the padding function is used directly, so it only need dataset
 			padding_fn = lambda dataset: dataset.padded_batch(batch_size, padded_shapes=expected_padded_shapes, padding_values= expected_padded_values)
 			data_prepared = data_prepared.apply(padding_fn)
@@ -251,13 +251,17 @@ class DefaultSeq2Seq:
 			src_lookup_table = tf.contrib.lookup.index_table_from_file(vocabulary_file=self.src_vocab_file, default_value=UNK_ID, name="src_lookup_table")
 			tgt_lookup_table = tf.contrib.lookup.index_table_from_file(vocabulary_file=self.tgt_vocab_file, default_value=UNK_ID, name="tgt_lookup_table")
 			tgt_reverse_table = tf.contrib.lookup.index_to_string_table_from_file(vocabulary_file=self.tgt_vocab_file, default_value=UNK_TOKEN, name="tgt_reverse_lookup_table")
-		return {"src_lookup_table":src_lookup_table, "tgt_lookup_table":tgt_lookup_table, "tgt_reverse_table":tgt_reverse_table}
+		return {
+			"src_lookup_table": src_lookup_table, 
+			"tgt_lookup_table": tgt_lookup_table, 
+			"tgt_reverse_table": tgt_reverse_table
+		}
 
 	def build_model(self, features, labels, lookup_table_dict, params={}, mode=tf.estimator.ModeKeys.TRAIN):
 		"""Build a model that depending on the mode will either output the logits or the predictions or both
 		Args:
-			features: a pair of (tokens, lengths) of tensors
-			labels: a pair of (tokens, lengths) of tensors, or None
+			features: a dict of (tokens, lengths) of tensors
+			labels: a dict of (tokens, lengths) of tensors, or None
 			lookup_table_dict: the result of build_vocab
 			params: a dict of external parameters
 			mode
@@ -280,7 +284,7 @@ class DefaultSeq2Seq:
 			features_ids = lookup_table_dict["src_lookup_table"].lookup(features_tokens, name="features_ids")
 			features_embedded = tf.nn.embedding_lookup(src_embedding, features_ids, name="features_embedded")
 			forward_cell = tf.nn.rnn_cell.BasicLSTMCell(self.num_units, name="fw_cell")
-			backward_cell = tf.nn.rnn_cell.BasicLSTMCell(self.num_units, name="fw_cell")
+			backward_cell = tf.nn.rnn_cell.BasicLSTMCell(self.num_units, name="bw_cell")
 			encoder_bi_outputs, encoder_state = tf.nn.bidirectional_dynamic_rnn(forward_cell, backward_cell, features_embedded, sequence_length=features_length, dtype=self.dtype)
 			encoder_outputs = tf.concat(encoder_bi_outputs, axis=-1)
 
@@ -300,15 +304,15 @@ class DefaultSeq2Seq:
 			if(mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL):
 				tf.logging.debug("Creating logits for TRAIN/EVAL")
 				tf.logging.debug("Labels tensor fed into build_model: {}".format(labels))
-				label_tokens = labels["tokens"]
-				label_length = labels["length"]
-				label_ids = lookup_table_dict["tgt_lookup_table"].lookup(label_tokens)
-				# pad the label_ids into <s> w1 w2 ... for the input of the training helper
+				labels_tokens = labels["tokens"]
+				labels_length = labels["length"]
+				labels_ids = lookup_table_dict["tgt_lookup_table"].lookup(labels_tokens)
+				# pad the labels_ids into <s> w1 w2 ... for the input of the training helper
 				# bummer, tf fill do not have dtype. Really.
 				decoder_input_front_padding = tf.fill([batch_size], SOS_ID)
-				decoder_input_front_padding = tf.cast( tf.expand_dims(decoder_input_front_padding, axis=1), label_ids.dtype)
-				decoder_input_length = label_length + 1
-				decoder_input_ids = tf.concat([decoder_input_front_padding, label_ids], axis=-1, name="decode_input_ids")
+				decoder_input_front_padding = tf.cast( tf.expand_dims(decoder_input_front_padding, axis=1), labels_ids.dtype)
+				decoder_input_length = labels_length + 1
+				decoder_input_ids = tf.concat([decoder_input_front_padding, labels_ids], axis=-1, name="decode_input_ids")
 				decoder_input_embedded = tf.nn.embedding_lookup(tgt_embedding, decoder_input_ids, name="decode_input_embedded")
 				training_helper = tf.contrib.seq2seq.TrainingHelper(decoder_input_embedded, decoder_input_length)
 				decoder = tf.contrib.seq2seq.BasicDecoder(single_cell, training_helper, single_start_state, output_layer=projection_layer)
@@ -345,9 +349,9 @@ class DefaultSeq2Seq:
 				prediction_length = final_state.lengths
 				# predictions must be a dict. Bummer
 				predictions = {
-						"ids":prediction_ids, 
-						"tokens":prediction_tokens, 
-						"length":prediction_length
+						"ids": prediction_ids, 
+						"tokens": prediction_tokens, 
+						"length": prediction_length
 				}
 			else:
 				predictions = None
@@ -364,20 +368,20 @@ class DefaultSeq2Seq:
 			A loss as first argument and a train_op if mode is TRAIN
 		"""
 		# the labels must be padded at the back with an extra eos id
-		label_tokens = labels["tokens"]
-		label_length = labels["length"]
-		label_ids = lookup_table_dict["tgt_lookup_table"].lookup(label_tokens)
-		back_padding = tf.fill(tf.shape(label_length), EOS_ID)
-		back_padding = tf.cast( tf.expand_dims(back_padding, axis=1), dtype=label_ids.dtype)
-		label_ids = tf.concat([label_ids, back_padding], axis=-1)
-		label_length = label_length + 1
+		labels_tokens = labels["tokens"]
+		labels_length = labels["length"]
+		labels_ids = lookup_table_dict["tgt_lookup_table"].lookup(labels_tokens)
+		back_padding = tf.fill(tf.shape(labels_length), EOS_ID)
+		back_padding = tf.cast( tf.expand_dims(back_padding, axis=1), dtype=labels_ids.dtype)
+		labels_ids = tf.concat([labels_ids, back_padding], axis=-1)
+		labels_length = labels_length + 1
 		# the calculated entropy, masked by the extended length
-		cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=label_ids, name="raw_cross_entropy")
-		mask = tf.sequence_mask(label_length, maxlen=tf.shape(cross_entropy)[1], dtype=cross_entropy.dtype, name="sequence_mask")
+		cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels_ids, name="raw_cross_entropy")
+		mask = tf.sequence_mask(labels_length, maxlen=tf.shape(cross_entropy)[1], dtype=cross_entropy.dtype, name="sequence_mask")
 		masked_cross_entropy = cross_entropy * mask
 		# calculate the per token and per sentence loss, before sending them into the summary
 		per_sentence_loss = tf.reduce_mean(tf.reduce_sum(masked_cross_entropy, axis=-1))
-		per_token_loss = tf.reduce_sum(masked_cross_entropy) / tf.cast(tf.reduce_sum(label_length), dtype=cross_entropy.dtype)
+		per_token_loss = tf.reduce_sum(masked_cross_entropy) / tf.cast(tf.reduce_sum(labels_length), dtype=cross_entropy.dtype)
 		with tf.control_dependencies([ tf.summary.scalar("sentence_loss", per_sentence_loss, family="loss"), 
 																	tf.summary.scalar("token_loss", per_token_loss, family="loss")]):
 			optimizer_loss = tf.identity(per_sentence_loss, name="loss")
@@ -407,10 +411,8 @@ class DefaultSeq2Seq:
 				loss, train_op = self.compute_loss(logits, labels, lookup_table_dict, mode=mode)
 				# push the predictions and labels into a collection for hooks to access
 				tf.logging.debug("Adding keys for evaluation hooks")
-				label_tokens, label_length = labels
+				labels_tokens, labels_length = labels
 				prediction_tokens, prediction_length = predictions["tokens"], predictions["length"]
-#				tf.add_to_collection("label_tokens", label_tokens)
-#				tf.add_to_collection("label_length", label_length)
 				tf.add_to_collection("prediction_tokens", prediction_tokens)
 				tf.add_to_collection("prediction_length", prediction_length)
 			elif(mode == tf.estimator.ModeKeys.PREDICT):
