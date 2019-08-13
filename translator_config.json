@@ -6,7 +6,7 @@
 		"eval_location_vi":"/home/quan/Workspace/Data/iwslt15/tst2012.vi",
 		"vocab_location_en":"/home/quan/Workspace/Data/iwslt15/vocab.en",
 		"vocab_location_vi":"/home/quan/Workspace/Data/iwslt15/vocab.vi",
-		"model_location":"/home/quan/workspace/data/model/translator/test_run"
+		"model_location":"/home/quan/Workspace/Data/model/translator/test_run"
 	},
 	"remote": {
 		"train_location_en":"/home/khoai23/neural_network/data/iwslt_en_vi/train.filter.en",
