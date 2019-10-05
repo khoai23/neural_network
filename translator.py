@@ -31,7 +31,7 @@ if __name__ == "__main__":
 	print("Running mode {}".format(args.mode))
 	session_config = tf.ConfigProto()
 	session_config.gpu_options.allow_growth = not args.full_gpu
-	translation_model = DefaultSeq2Seq(num_units=512, vocab_files=(vocab_location_en, vocab_location_vi), model_dir=model_position, session_config=session_config)
+	translation_model = DefaultSeq2Seq(vocab_files=(vocab_location_en, vocab_location_vi), num_units=512, model_dir=model_position, session_config=session_config)
 	# set the verbosity
 	translation_model.verbosity(tf.logging.DEBUG)
 	if(args.mode == "train"):
