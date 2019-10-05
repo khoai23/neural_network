@@ -305,8 +305,7 @@ class DefaultSeq2Seq:
 				label_ids = lookup_table_dict["tgt_lookup_table"].lookup(label_tokens)
 				# pad the label_ids into <s> w1 w2 ... for the input of the training helper
 				# bummer, tf fill do not have dtype. Really.
-				decoder_input_front_padding = tf.fill([batch_size], SOS_ID)
-				decoder_input_front_padding = tf.cast( tf.expand_dims(decoder_input_front_padding, axis=1), label_ids.dtype)
+				decoder_input_front_padding = tf.cast( tf.fill([batch_size, 1], SOS_ID), label_ids.dtype)
 				decoder_input_length = label_length + 1
 				decoder_input_ids = tf.concat([decoder_input_front_padding, label_ids], axis=-1, name="decode_input_ids")
 				decoder_input_embedded = tf.nn.embedding_lookup(tgt_embedding, decoder_input_ids, name="decode_input_embedded")
@@ -482,5 +481,5 @@ class DefaultSeq2Seq:
 		for i in range(n_best):
 			tokens, length = tokens[i], length[i]
 			sentence = b" ".join(tokens[:length - 1]) + b"\n"
-		stream.write(sentence.decode("utf-8"))
+			stream.write(sentence.decode("utf-8"))
 		return stream
