@@ -1,0 +1,48 @@
+lstm.py --data_path C:\Python\lstm\simple-examples\data\ --save_path C:\Python\lstm\save --num_gpu 0 --rnn_mode basic
+
+python -m nmt.nmt --src=vi --tgt=en --vocab_prefix=D:\Workspace\nmt\iwslt15\vocab --train_prefix=D:\Workspace\nmt\iwslt15\train --dev_prefix=D:\Workspace\nmt\iwslt15\tst2012 --test_prefix=D:\Workspace\nmt\iwslt15\tst2013 --out_dir=D:\Workspace\nmt\nmt_model_512 --num_train_steps=12000 --steps_per_stats=100 --num_layers=2 --num_units=512 --dropout=0.2 --metrics=bleu --num_gpus=8 --start_decay_step=8000 --decay_steps=1000 --decay_factor=0.5
+ 
+python -m nmt.nmt --src=vi --tgt=en --vocab_prefix=D:\Workspace\nmt\iwslt15\vocab --train_prefix=D:\Workspace\nmt\iwslt15\train --dev_prefix=D:\Workspace\nmt\iwslt15\tst2012 --test_prefix=D:\Workspace\nmt\iwslt15\tst2013 --out_dir=D:\Workspace\nmt\nmt_model_512_decay --num_train_steps=12000 --steps_per_stats=100 --num_layers=2 --num_units=512 --dropout=0.2 --metrics=bleu --num_gpus=8 --start_decay_step=8000 --decay_steps=1000 --decay_factor-0.5
+
+python -m nmt.nmt --out_dir=D:\Workspace\nmt\nmt_model_512 --inference_input_file=D:\Workspace\nmt\iwslt15\inference.vi --inference_output_file=D:\Workspace\nmt\iwslt15\inf_512.en --inference_ref_file=D:\Workspace\nmt\iwslt15\inference.en
+ /var/nmt_data/iwwslt15 /
+ D:\Workspace\nmt\iwslt15\
+ 
+ Em xin gửi script Python tên scorer.py
+ 
+Script này chủ yếu là có biến -i (--inputdir), --tgt và --src để nhận 3 file vào, -t (--tau) để chỉnh tỉ lệ đánh giá
+-o (--outputdir) để có 6 file ra, file ra sẽ default là dùng tên file passed|failed, có thể chỉnh lại bằng
+-d(--differentiator), với trước (pass) ứng với câu có điểm >=t và sau (fail) ứng với câu có điểm <t
+
+-o sẽ tự động lấy giá trị của -i nếu không viết, src và tgt tạm thời tự động lấy ja và en
+
+vd như có file.en, file.ja và file.align, với tỉ lệ 0.7, chúng ta muốn tách ra 
+thành các file dạng file_passed và file_failed thì chúng ta sẽ có -i /path/to/file -d _passed._failed --src en --tgt ja -t 0.7
+sẽ được 6 file gồm file_passed.(en/ja/align) và file_failed.(en/ja/align)
+
+Anh có thể xem thêm trong script hoặc dùng biến -h.
+
+một vài trường hợp riêng lẻ không bắt được POStag
+
+Vậy em xin gửi ví dụ chạy của em (rename lại dev.en-vi.align thành dev.align, cùng thư mục, chạy lệnh exampleBuilder.py -i dev ra dev.train)
+
+Anh có thể copy lỗi khi chạy scorer.py cho em xem được không ạ?
+
+Tiện thể, skype của em là khoai23, nhưng em thường dùng Zalo hơn.
+
+Quân.
+
+java -classpath weka.jar weka.classifiers.functions.MultilayerPerceptron -t *.arff -L 0.5 -H 200,100 -split-percentage 80 -N 100
+
+.+=(Từ|Đinh|Lý|Mộ|Thành|Thích|Văn|Phương|Dịch|Triều|Yến|Mộc|Quyền|Đỗ|Dương|Lâm) (.*)
+.+=(Nhị|Tam|Tứ|Ngũ|Lục|Thất|Bát|Cửu|Lệ|Thượng Quan|Nghiêm|Nhâm) (.*)
+.+=(Tá|Hà|Dư|Đông|Hầu|Du|Hậu|Quan|Lãnh|Đao|Lưu|Bao|Hoa) (.*)
+.+=(Trác|Đan|Vệ|Diệp|Tư Đồ|Tư Không|Tư Mã|Lữ|Quân|Ngô|Chu|Đường|Đồ|Viên) (.*)
+.+=(Hạ|Đại|Thiên|Diêu|Khương|Cừu|Khổng|Tôn|Mạnh|Trữ|An|Tống|Phong) (.*)
+.+=(Nghiêu|Triển|Thôi|Tả|Bình|Trang|Bàng|Trương|Quy|Đồng|Bành|Liễu|Lương) (.*)
+.+=(Mai|Kyou|Sở|Vũ|Thù|Đoàn|Ân|Tất|Mao|Giang|Uông|Trầm|Lạc|Hồng) (.*)
+.+=(Sử|Thường|Mạc|Thủy|Kha|Ôn|Phan|Yên|Hùng|Miêu|Vương|Chân|Điền|Bạch) (.*)
+.+=(Thạch|Chúc|Thu|Tần|Trình|Mễ|Kỷ|La|Địch|Niếp|Tiếu|Hồ|Thư|Tô) (.*)
+.+=(Tiêu|Mông|Thái|Tiết|Hành|Bùi|Hứa|Tạ|Đàm|Cốc|Cổ|Triệu|Lộ|Biên) (.*)
+.+=(Đạt|Đặng|Khâu|Trịnh|Hác|Quách|Kim|Thiết|Chung|Tiền|Trần|Đào|Hùng|Tuyết) (.*)
+.+=(Lôi|Hoắc|Vi|Hàn|Hạng|Cố|Mã|Cao|Ngụy|Lỗ|Bảo|Lộc|Lân|Ma|Hoàng|Long) (.*)

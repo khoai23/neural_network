@@ -1,0 +1,6 @@
+﻿[IgnoredUrl]
+http://sndasdopassport.sdo.com
+http://cj.qidian.com/svnad
+http://cj.qidian.com/include/bottom_snda1.htm
+
+[IgnoredTags]

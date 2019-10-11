@@ -1,0 +1,152 @@
+POStag
+CC	Coordinating conjunction
+CD	Cardinal number
+DT	Determiner
+EX	Existential there
+FW	Foreign word
+IN	Preposition or subordinating conjunction
+JJ	Adjective
+JJR	Adjective, comparative
+JJS	Adjective, superlative
+LS	List item marker
+MD	Modal
+NN	Noun, singular or mass
+NNS	Noun, plural
+NNP	Proper noun, singular
+NNPS	Proper noun, plural
+PDT	Predeterminer
+POS	Possessive ending
+PRP	Personal pronoun
+PRP$	Possessive pronoun
+RB	Adverb
+RBR	Adverb, comparative
+RBS	Adverb, superlative
+RP	Particle
+SYM	Symbol
+TO	to
+UH	Interjection
+VB	Verb, base form
+VBD	Verb, past tense
+VBG	Verb, gerund or present participle
+VBN	Verb, past participle
+VBP	Verb, non-3rd person singular present
+VBZ	Verb, 3rd person singular present
+WDT	Wh-determiner
+WP	Wh-pronoun
+WP$	Possessive wh-pronoun
+WRB	Wh-adverb
+ROOT	Temporary POStag for root
+
+N	Noun
+Nb	Borrowed noun
+R	Adjunct
+I	Exclamation
+Np	Proper noun
+V	Verb
+L	Determiner
+T	Particle
+Nc	Classifier noun
+Vb	Borrowed verb
+M	Quantity
+Y	Abbreviation
+Nu	Unit noun
+A	Adjective
+E	Preposition
+S	Affix
+Ny	Abbreviated noun
+P	Pronoun
+C	Conjunction
+X	Un-definition/Other
+
+$	Specialist tag
+
+dependency
+root	root
+dep	dependent
+aux	auxiliary
+auxpass	passive auxiliary
+cop	copula
+arg	argument
+agent	agent
+comp	complement
+acomp	adjectival complement
+ccomp	clausal complement with internal subject
+xcomp	clausal complement with external subject
+obj	object
+dobj	direct object
+iobj	indirect object
+pobj	object of preposition
+subj	subject
+nsubj	nominal subject
+nsubjpass	passive nominal subject
+csubj	clausal subject
+csubjpass	passive clausal subject
+cc	coordination
+conj	conjunct
+expl	expletive (expletive “there”)
+mod	modifier
+amod	adjectival modifier
+appos	appositional modifier
+advcl	adverbial clause modifier
+det	determiner
+predet	predeterminer
+preconj	preconjunct
+vmod	reduced, non-finite verbal modifier
+mwe	multi-word expression modifier
+mark	marker (word introducing an advcl or ccomp)
+advmod	adverbial modifier
+neg	negation modifier
+rcmod	relative clause modifier
+quantmod	quantifier modifier
+nn	noun compound modifier
+npadvmod	noun phrase adverbial modifier
+tmod	temporal modifier
+num	numeric modifier
+number	element of compound number
+prep	prepositional modifier
+poss	possession modifier
+possessive	possessive modifier (’s)
+prt	phrasal verb particle
+parataxis	parataxis
+goeswith	goes with
+punct	punctuation
+ref	referent
+sdep	semantic dependent
+xsubj	controlling subject
+
+erased	conjunction and preposition once collapsed
+prepc	prepositional clausal modifier, use in collapsed
+partmod	piece generalized by vmod
+infmod	piece generalized by vmod
+attr	supposedly removed as per manual, complement of copular verb
+pcomp	prepositional complement
+rel	supposedly removed as per manual, succeeded by nsubj/dobj/pobj/dep
+discourse	introduced for informal text
+
+adv	unknown
+cnd	unknown
+coord	unknown
+dir	unknown
+dob	unknown
+ext	unknown
+iob	unknown
+loc	unknown
+mnr	unknown
+nmod	unknown
+pmod	unknown
+pob	unknown
+prd	unknown
+prp	unknown
+sub	unknown
+tmp	unknown
+tpc	unknown
+voc	unknown
+x	unknown
+xmdp	unknown
+
+case	unknown
+cop	unknown
+acl	unknown
+compound	unknown
+nummod	unknown
+list	unknown
