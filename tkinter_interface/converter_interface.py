@@ -1,5 +1,7 @@
 import rawPhrase as raw_converter
-from rawPhrase import TranslateData, numberRuleProper, numberRuleBackup
+import neuralTrans as neural_converter
+import os
+#from rawPhrase import TranslateData, numberRuleProper, numberRuleBackup
 
 DEFAULT_NAME_DICT = "name.txt"
 DEFAULT_PHRASE_DICT = "phrase.txt"
@@ -34,6 +36,10 @@ class ConverterObject:
 			# add option here so the functions inside raw_converter can access the writeToLog
 			raw_converter.bindLoggingFunction(self.writeToLog)
 		elif(mode == "neural"):
+			def do_nothing(*args, **kwargs):
+				self.writeToLog("Function not implemented with args: {} and kwargs: {}".format(args, kwargs))
+			self.loadDataFunc = lambda location: neural_converter.selectModelFolder(location, self.writeToLog, raise_error=raise_error)
+			self.saveDataFunc = self.loadTextDataFunc = self.saveTextDataFunc = self.updateDataFunc = do_nothing
 			raise NotImplementedError("Neural net version not implemented")
 		else:
 			raise ValueError("mode {:s} not compatible".format(mode))
@@ -90,12 +96,14 @@ class ConverterObject:
 
 	def convert(self, targetData, **kwargs):
 		assert self.data is not None, "ERROR: No data to convert"
-		return self.convertFunc(targetData, self.data, )
+		self.writeToLog("Note: currently convert function feed all kwargs: {}".format(kwargs))
+		return self.convertFunc(targetData, self.data, **kwargs)
 
 	def bindLoggingFunction(self, function):
 		self.writeLogFunc = function
 
 	def writeToLog(self, *args, **kwargs):
+		print(*args)
 		return self.writeLogFunc(*args, **kwargs)
 
 ## legacy, remove later

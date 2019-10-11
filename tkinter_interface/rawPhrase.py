@@ -29,14 +29,13 @@ def openFileByChardet(fileDir, openMode, logger=writeToLog):
 		fileRead = io.open(fileDir, openMode + "b").read()
 		detector = chardet.detect(fileRead)
 		# file.close()
-		logger('Opened file {} with encoding {}'.format(fileDir, detector['encoding']))
+		logger('Try opening file {} with encoding {}'.format(fileDir, detector['encoding']))
 		return fileRead.decode(detector['encoding'])
-	except IOError:
-		logger('Cannot read file source @{}'.format(fileDir))
-		sys.exit()
-	except UnicodeDecodeError:
-		logger('Error during decoding @{}'.format(fileDir))
-		sys.exit()
+	except IOError as e:
+		logger('Cannot read file source @{}, error {}'.format(fileDir, e))
+	except UnicodeDecodeError as e:
+		logger('Error during decoding @{}, error {}'.format(fileDir, e))
+		return fileRead.decode(detector['encoding'], errors='ignore')
 	
 def addPhraseToTree(treeRoot, phraseTuple, convertToFullClass=False):
 	if(not isinstance(treeRoot, Node)):
@@ -303,7 +302,8 @@ def convertByPhrasePriorityMode(source, convertDict, maxPhraseLengthSupported=8,
 		writeToLog("Conversion completed, cost %.2fs, counted %d phrase" % (time.time() - timer, len(output)))
 	return output if not splitOutput else (output, splittedSource)
 	
-def convertByPhraseWithHandRule(source, phraseAndNameDict, ruleSet=set({}), separator="", maxPhraseLengthSupported=8):
+def convertByPhraseWithHandRule(source, phraseAndNameDict, ruleSet=set({}), separator="", maxPhraseLengthSupported=8, **kwargs):
+	"""Convert the data (source) using dictionary (phraseAndNameDict). supporting options ruleSet, separator, maxPhraseLengthSupported"""
 	timer = time.time()
 	# Will do construct similar to splittedSource
 	phraseDict, nameDict = phraseAndNameDict

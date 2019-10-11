@@ -1,16 +1,14 @@
 # from tkinter import Tk, Label, Button, Frame, Text, Scrollbar
-import sys, time, os 
+import time, os 
 import tkinter as tki
 import tkinter.messagebox as MessageBox
 import tkinter.filedialog as FileDialog
 import converter_interface 
-#import rawPhrase as raw_converter
-from trie import TrieNode as Node
 
 counter = 0
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
-DEFAULT_BINARY_FILE = "\\combinedDict.tmp"
+DEFAULT_BINARY_FILE = "combinedDict.tmp"
 DEFAULT_CONVERT_SOURCE = "\\1728-2.txt"
 MAX_PHRLEN = 8
 
@@ -21,8 +19,6 @@ DEFAULT_WIDTH = 1650
 WINDOW_RATIO = 0.8
 SAVE_BINARY_WHEN_CLOSING = False
 SEPARATOR =('', ' ')
-def getFittingTextSize():
-	width = WINDOW_RATIO
 
 class MainGUI:
 	def __init__(self, master):
@@ -115,7 +111,7 @@ class MainGUI:
 		else:
 			source = self.converter.openFile(sourceDir, 'r')
 		self.converter.writeToLog("Source loaded, string size: %d, time passed %s" % (len(source), time.time() - timer))
-		output = self.converter.convert(source, ruleSet={ converter_interface.numberRuleProper, converter_interface.numberRuleBackup }, separator=SEPARATOR)
+		output = self.converter.convert(source, ruleSet={ converter_interface.raw_converter.numberRuleProper, converter_interface.raw_converter.numberRuleBackup }, separator=SEPARATOR)
 		convData = []
 		rawData = []
 		for raw, conv, _ in output:
@@ -174,7 +170,7 @@ class MainGUI:
 		if("_delete_" in output):
 			tag = "delete"
 		elif("_replace_" in output):
-			tag = replace
+			tag = "replace"
 			output = output.replace("_replace_", "").strip()
 		updateTuple = (source, output)
 		updateDictIdx = 0 if not isName else 1
@@ -339,8 +335,9 @@ class ControlPane:
 		self.convertDir.insert(0, dir_path)
 		self.dictDir.insert(0, dir_path)
 		
-		if(os.path.isfile(dir_path + DEFAULT_BINARY_FILE)):
-			self.treeFileDir.insert(0, dir_path + DEFAULT_BINARY_FILE)
+		default_file = os.path.join(dir_path, DEFAULT_BINARY_FILE)
+		if(os.path.isfile(default_file)):
+			self.treeFileDir.insert(0, default_file)
 		else:
 			self.treeFileDir.insert(0, dir_path)
 		
