@@ -2,4 +2,11 @@ __pycache__/
 data/
 tkinter_interface/crawler_data
 tkinter_interface/lnch
-
+jupyter/data
+*-checkpoint.ipynb
+*.tar.gz
+*.zip
+*.txt
+*.csv
+*.json
+*.jar
